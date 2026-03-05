@@ -6,16 +6,18 @@ module.exports = function (app) {
   // leaving SPA routes (e.g. /vms) to be handled by the dev server.
   const proxyPaths = [
     '/api',
-    '/ws',
     '/socket.io',
     '/novnc',
     '/noVNC',
     '/console'
   ];
 
+  // Choose proxy target from env (useful when running in WSL vs Docker)
+  const proxyTarget = process.env.REACT_APP_PROXY_TARGET || process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
   app.use(
     createProxyMiddleware(proxyPaths, {
-      target: 'http://cee-backend:8000',
+      target: proxyTarget,
       changeOrigin: true,
       ws: true,
       secure: false,

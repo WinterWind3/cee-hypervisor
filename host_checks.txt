@@ -1,0 +1,6 @@
+-rw-r--r-- 1 libvirt-qemu kvm 196672 Mar  5 01:59 /var/lib/libvirt/images/ubuntu.qcow2
+---
+ Target   Source
+------------------------------------------------
+ vda      /var/lib/libvirt/images/ubuntu.qcow2
+

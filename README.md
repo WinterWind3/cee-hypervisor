@@ -139,6 +139,38 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 # libvirt
 LIBVIRT_URI=qemu:///system
 
+#### Интеграция контейнера `cee-backend` с хостовым libvirt
+Если вы запускаете `cee-backend` в Docker и хотите, чтобы он управлял ВМ на хосте, выполните:
+
+1) В `docker-compose.yml` пробросьте сокет и (опционально) каталог образов:
+```yaml
+services:
+  backend:
+    volumes:
+      - /run/libvirt/libvirt-sock:/run/libvirt/libvirt-sock
+      - /var/lib/libvirt/images:/var/lib/libvirt/images:ro  # :ro по умолчанию
+    environment:
+      LIBVIRT_URI: qemu:///system
+```
+
+2) Убедитесь в правах сокета и задайте `BACKEND_UID`/`BACKEND_GID` в `.env` (чтобы контейнер имел доступ):
+```bash
+stat -c '%U %g %a %n' /run/libvirt/libvirt-sock
+# затем в .env: BACKEND_UID=<uid> BACKEND_GID=<gid>
+```
+
+3) Перезапустите сервисы и проверьте из контейнера:
+```powershell
+docker compose down cee-backend
+docker compose up -d cee-backend
+docker exec -it cee-backend sh -c "ls -l /run/libvirt/libvirt-sock || true; virsh -c qemu:///system list --all || true"
+```
+
+4) Соображения по безопасности:
+- Не делайте сокет world-writable; предпочитайте запуск процесса контейнера с нужным GID или настройку ACL (`setfacl`).
+- Альтернатива — настроить TLS для `libvirtd` и подключать контейнер по `qemu+tls://...`.
+
+
 # Мониторинг
 METRICS_ENABLED=true
 PROMETHEUS_PORT=9090
