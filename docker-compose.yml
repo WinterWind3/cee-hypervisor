@@ -21,11 +21,15 @@ services:
     container_name: cee-backend
     ports:
       - "8000:8000"
+      - "16509:16509"
     environment:
       DATABASE_URL: postgresql://cee:cee123@postgres:5432/cee
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
-      LIBVIRT_URI: qemu:///system
+      LIBVIRT_URI: qemu+tcp://host.docker.internal:16510/system
       IMAGES_PATH: /var/lib/libvirt/images
+      NOVNC_HOST: localhost
+      NOVNC_PORT: 6080
+      LIBVIRT_VNC_HOST: host.docker.internal
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
       - /var/lib/libvirt/images:/var/lib/libvirt/images
@@ -43,8 +47,19 @@ services:
     ports:
       - "3000:3000"
     environment:
-      REACT_APP_API_URL: http://localhost:8000
-      REACT_APP_WS_URL: ws://localhost:8000
+      REACT_APP_API_URL: http://cee-backend:8000
+      REACT_APP_WS_URL: ws://cee-backend:8000
+    depends_on:
+      - backend
+    networks:
+      - cee-network
+    restart: unless-stopped
+
+  novnc:
+    image: theasp/novnc:latest
+    container_name: cee-novnc
+    ports:
+      - "6080:8080"
     depends_on:
       - backend
     networks:
