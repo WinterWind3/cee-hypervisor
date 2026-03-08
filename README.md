@@ -1,363 +1,138 @@
 # CEE Hypervisor
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
-![Python](https://img.shields.io/badge/python-3.12-green)
-![Electron](https://img.shields.io/badge/electron-latest-9feaf9)
-![License](https://img.shields.io/badge/license-MIT-orange)
+CEE Hypervisor is a local virtualization management interface built on FastAPI, libvirt, and React. The current repository is oriented around a single practical runtime mode: FastAPI serves both the API and the built frontend on `http://localhost:8080`.
 
-**CEE Hypervisor** — это современная, легковесная платформа для управления виртуализацией, построенная на связке мощного Python-бэкенда (FastAPI + libvirt) и кроссплатформенного десктопного клиента (Electron + React). Проект предоставляет интуитивный интерфейс для управления виртуальными машинами, образами, снимками состояния и кластерами гипервизоров.
+## What Works
 
-<p align="center">
-  <img src="docs/images/cee-dashboard-preview.png" alt="CEE Dashboard Preview" width="800"/>
-</p>
+- Virtual machine listing and lifecycle actions through libvirt
+- Image management for project-local images
+- Upload of image files from disk
+- Import of images by URL, local file path, or whole local directory
+- Basic views for clusters, servers, networks, storage, and snapshots
+- React production build served directly by FastAPI
 
-## ✨ Ключевые возможности
+## Runtime Model
 
-| Компонент | Возможности |
-|:----------|:------------|
-| **🖥️ Управление ВМ** | Создание, запуск/остановка, удаление, миграция, изменение ресурсов (CPU/RAM/HDD) |
-| **📸 Снимки (Snapshots)** | Мгновенные снимки состояния ВМ с возможностью отката |
-| **🖼️ Управление образами** | Загрузка ISO, создание шаблонов, конвертация дисков |
-| **🌐 Кластеризация** | Объединение нескольких хостов в кластер с централизованным управлением |
-| **📊 Мониторинг в реальном времени** | Графики нагрузки CPU/RAM/диска/сети через WebSocket |
-| **🔐 Безопасность** | JWT-аутентификация, RBAC (ролевая модель), изоляция сессий |
-| **⚡ Производительность** | Асинхронный бэкенд, оптимизированные вызовы libvirt, кэширование |
+- Preferred local entrypoint on Linux or WSL: `./start-prod.sh`
+- Preferred local entrypoint on Windows PowerShell: `./start-prod.ps1`
+- Compatibility wrapper on Windows PowerShell: `./run_all.ps1`
+- Default app URL: `http://localhost:8080`
+- API docs: `http://localhost:8080/docs`
 
-## 🏗️ Архитектура
+This mode avoids the React dev server and avoids `uvicorn --reload`, which was significantly slower for this project on WSL-mounted paths.
 
-┌─────────────────────────────────────────────────────────────────┐
-│ Клиент (Electron) │
-│ ┌───────────────────────────────────────────────────────────┐ │
-│ │ React UI (Tailwind, Chart.js, React Router) │ │
-│ └───────────────────────────────────────────────────────────┘ │
-│ │ │
-│ REST/WebSocket │
-│ ▼ │
-├─────────────────────────────────────────────────────────────────┤
-│ Бэкенд (Python/FastAPI) │
-│ ┌───────────────────────────────────────────────────────────┐ │
-│ │ API Endpoints (auth, vms, images, snapshots, clusters) │ │
-│ ├───────────────────────────────────────────────────────────┤ │
-│ │ Сервисный слой (libvirt_service, qemu_service) │ │
-│ ├───────────────────────────────────────────────────────────┤ │
-│ │ Ядро (config, security, database, deps) │ │
-│ └───────────────────────────────────────────────────────────┘ │
-│ │ │
-│ libvirt / QEMU │
-│ ▼ │
-├─────────────────────────────────────────────────────────────────┤
-│ Гипервизор (KVM/Хост) │
-│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
-│ │ VM-1 │ │ VM-2 │ │ VM-3 │ │ Infra-VM │ │
-│ │ (Ubuntu) │ │ (CentOS) │ │ (Windows)│ │ (CEE) │ │
-│ └──────────┘ └──────────┘ └──────────┘ └──────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+## Requirements
 
-
-
-## 🛠️ Технологический стек
-
-### Бэкенд
-- **Язык:** Python 3.12
-- **Фреймворк:** FastAPI (асинхронный)
-- **Виртуализация:** libvirt-python, QEMU/KVM
-- **База данных:** SQLAlchemy + Alembic (PostgreSQL/SQLite)
-- **Аутентификация:** JWT + bcrypt
-- **Мониторинг:** psutil, prometheus_client
-- **Логирование:** loguru
-- **WebSocket:** native FastAPI WebSockets
-
-### Фронтенд
-- **Платформа:** Electron
-- **UI:** React 18, TailwindCSS
-- **Роутинг:** React Router v6
-- **Графики:** Chart.js + react-chartjs-2
-- **HTTP-клиент:** Axios
-- **Сборка:** react-scripts (Create React App)
-
-## 📦 Установка
-
-### Быстрый старт (готовый бинарник)
-1. Перейдите на [страницу релизов](https://github.com/yourname/cee-hypervisor/releases)
-2. Скачайте `CEE_Hypervisor.exe` (Windows), `.dmg` (macOS) или `.AppImage` (Linux)
-3. Запустите приложение
-
-### Установка из исходников
-
-#### Предварительные требования
 - Python 3.12+
 - Node.js 18+
-- libvirt-dev / libvirt-devel
-- QEMU/KVM
+- libvirt and QEMU/KVM available on the host where the backend runs
+- WSL is required if you use `start-prod.ps1`, because it delegates execution to `start-prod.sh`
 
-#### Клонирование репозитория
-bash
-git clone https://github.com/yourname/cee-hypervisor.git
-cd cee-hypervisor
+## Initial Setup
 
- #### Настройка бэкенда
+### Backend
+
+```bash
+cd backend
+python3 -m venv venv
+. venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+On Windows, if you are creating a Windows-side virtual environment for editor tooling, use:
+
+```powershell
 cd backend
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или .\venv\Scripts\activate (Windows)
-
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# Настройка окружения
-cp .env.example .env
-# Отредактируйте .env под свои нужды
-
-# Инициализация базы данных
-alembic upgrade head
-
-# Запуск бэкенда
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
- #### Настройка фронтенда
- cd ../frontend
-npm install
-
-# Для разработки (отдельно от Electron)
-npm start
-
-# Для сборки Electron-приложения
-npm run electron:build
-
- ####  Запуск полного стека
- # Из корня проекта
-make run-dev
-
- #### ⚙️ Конфигурация
- # Основные переменные окружения (.env):
- # Бэкенд
-DATABASE_URL=postgresql://user:pass@localhost/cee
-# или SQLite: sqlite:///./cee.db
-SECRET_KEY=your-super-secret-key
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-
-# libvirt
-LIBVIRT_URI=qemu:///system
-
-#### Интеграция контейнера `cee-backend` с хостовым libvirt
-Если вы запускаете `cee-backend` в Docker и хотите, чтобы он управлял ВМ на хосте, выполните:
-
-1) В `docker-compose.yml` пробросьте сокет и (опционально) каталог образов:
-```yaml
-services:
-  backend:
-    volumes:
-      - /run/libvirt/libvirt-sock:/run/libvirt/libvirt-sock
-      - /var/lib/libvirt/images:/var/lib/libvirt/images:ro  # :ro по умолчанию
-    environment:
-      LIBVIRT_URI: qemu:///system
 ```
 
-2) Убедитесь в правах сокета и задайте `BACKEND_UID`/`BACKEND_GID` в `.env` (чтобы контейнер имел доступ):
+### Frontend
+
 ```bash
-stat -c '%U %g %a %n' /run/libvirt/libvirt-sock
-# затем в .env: BACKEND_UID=<uid> BACKEND_GID=<gid>
-```
-
-3) Перезапустите сервисы и проверьте из контейнера:
-```powershell
-docker compose down cee-backend
-docker compose up -d cee-backend
-docker exec -it cee-backend sh -c "ls -l /run/libvirt/libvirt-sock || true; virsh -c qemu:///system list --all || true"
-```
-
-4) Соображения по безопасности:
-- Не делайте сокет world-writable; предпочитайте запуск процесса контейнера с нужным GID или настройку ACL (`setfacl`).
-- Альтернатива — настроить TLS для `libvirtd` и подключать контейнер по `qemu+tls://...`.
-
-
-# Мониторинг
-METRICS_ENABLED=true
-PROMETHEUS_PORT=9090
-
- #### Использование
-Веб-интерфейс (режим разработки)
-После запуска бэкенда и фронтенда откройте:
-
-API Документация: http://localhost:8000/docs
-
-Фронтенд (React): http://localhost:3000
-
-WebSocket тест: http://localhost:8000/ws-test
- 
- 
- ####  Десктоп-приложение
-После сборки (npm run electron:build) запустите приложение из папки dist/.
-
- #Основные действия
-Вход в систему: используйте учетные данные администратора
-
-Подключение хоста: Хосты → Добавить хост → введите URI libvirt
-
-Создание ВМ: ВМ → Создать → выберите образ, настройте ресурсы
-
-Мониторинг: откройте панель дашборда для просмотра графиков
- 
- ####  📁 Структура проекта
- 
- 
- cee-hypervisor/
-├── backend/                 # Python-бэкенд
-│   ├── app/
-│   │   ├── api/            # Эндпоинты API
-│   │   ├── core/           # Конфиг, безопасность, БД
-│   │   ├── models/         # SQLAlchemy модели
-│   │   ├── schemas/        # Pydantic схемы
-│   │   ├── services/       # Бизнес-логика
-│   │   └── main.py         # Точка входа
-│   ├── migrations/         # Alembic миграции
-│   ├── tests/              # Тесты
-│   ├── requirements.txt    # Зависимости Python
-│   └── Dockerfile          # Контейнеризация бэкенда
-├── frontend/               # Electron + React клиент
-│   ├── build/              # Собранный React
-│   ├── electron/           # Electron main/preload
-│   ├── src/                # React компоненты
-│   ├── package.json        # Зависимости npm
-│   └── electron-builder.json # Конфиг сборки
-├── infra-vm/               # Шаблоны для инфраструктурной ВМ
-├── docs/                   # Документация
-├── dist/                   # Собранные бинарники
-├── docker-compose.yml      # Оркестрация
-├── Makefile                # Автоматизация команд
-├── ROADMAP.md              # План развития
-└── README.md               # Этот файл
-
-
-
- ####  🧪 Тестирование
- # Бэкенд
-cd backend
-pytest tests/ -v --cov=app
-
-# Фронтенд
 cd frontend
-npm test
+npm install
+```
 
-# Интеграционные тесты
-make test-integration
+## Start The Application
 
+### Linux or WSL
 
+```bash
+./start-prod.sh
+```
 
----
+### Windows PowerShell
 
-# 📁 Файл: `ROADMAP.md`
+```powershell
+.\start-prod.ps1
+```
 
-```markdown
-# 🗺️ Дорожная карта (Roadmap) CEE Hypervisor
+To force a fresh frontend build before startup:
 
-Версия: 2.0.0  
-Последнее обновление: Март 2026
+```powershell
+.\start-prod.ps1 --build
+```
 
-Данный документ описывает план развития проекта CEE Hypervisor на ближайшие релизы. Мы разделили roadmap на три основных этапа: ближайшие улучшения (short-term), среднесрочные цели (mid-term) и долгосрочное видение (long-term).
+The startup script does the following:
 
----
+- builds `frontend/build` if it does not exist, or when `--build` is passed
+- stops an existing backend process on port `8080`
+- starts FastAPI on `0.0.0.0:8080`
+- serves both API routes and the React production bundle from the same process
 
-## 🚀 Версия 2.1.0 — "Стабильность и удобство" (Q2 2026)
+## Makefile Commands
 
-### 🔧 Бэкенд
-- [ ] **Полное покрытие тестами:** Довести coverage до 85%+ для core-модулей
-- [ ] **Кэширование запросов:** Redis для кэширования состояния ВМ и снижения нагрузки на libvirt
-- [ ] **WebSocket с аутентификацией:** Добавить JWT-проверку для WebSocket-соединений
-- [ ] **API Versioning:** Внедрить версионирование API (v1, v2) для обратной совместимости
-- [ ] **Улучшенное логирование:** Структурированные логи в формате JSON для интеграции с ELK/Loki
+```bash
+make setup
+make build-prod
+make start-prod
+make test
+make clean
+```
 
-### 🖥️ Фронтенд
-- [ ] **Темная тема:** Полноценная поддержка светлой и темной темы через Tailwind
-- [ ] **Локализация:** Английский + Русский языки (i18n)
-- [ ] **Уведомления:** Система всплывающих уведомлений о событиях (ВМ создана, ошибка и т.д.)
-- [ ] **Drag-n-drop для образов:** Возможность загружать ISO перетаскиванием в окно
+## Image Storage
 
-### 🏗️ Инфраструктура
-- [ ] **Helm-чарты:** Для развертывания в Kubernetes (если потребуется)
-- [ ] **Ansible playbooks:** Автоматизация развертывания на чистых серверах
+- Project-managed writable images are stored in `backend/Images`
+- A shared host image directory may also be read from the backend configuration
+- Image uploads and imports use atomic temporary files before final rename
 
----
+## Useful URLs
 
-## 🚀 Версия 2.2.0 — "Сеть и хранилище" (Q3 2026)
+- App: `http://localhost:8080`
+- API docs: `http://localhost:8080/docs`
+- OpenAPI schema: `http://localhost:8080/openapi.json`
+- Health check: `http://localhost:8080/api/health`
 
-### 🌐 Сеть (аналог Neutron)
-- [ ] **Виртуальные сети:** Создание изолированных сетей между ВМ
-- [ ] **Маршрутизация:** Настройка виртуальных маршрутизаторов
-- [ ] **Плавающие IP:** Поддержка floating IP для доступа извне
-- [ ] **DHCP:** Встроенный DHCP-сервер для виртуальных сетей
-- [ ] **Security Groups:** Правила файрвола для групп ВМ
+## Project Layout
 
-### 💾 Хранилище (аналог Cinder)
-- [ ] **Тома (Volumes):** Создание и управление дополнительными дисками независимо от ВМ
-- [ ] **Подключение/отключение:** Горячее подключение дисков к ВМ
-- [ ] **Снапшоты томов:** Отдельные снимки для дисков
-- [ ] **Бэкапы:** Интеграция с внешними хранилищами (S3, NFS) для бэкапов
+```text
+cee-hypervisor/
+|-- backend/
+|   |-- app/
+|   |   |-- api/
+|   |   |-- core/
+|   |   |-- models/
+|   |   |-- schemas/
+|   |   `-- services/
+|   |-- requirements.txt
+|   `-- test_app.py
+|-- frontend/
+|   |-- build/
+|   |-- public/
+|   |-- src/
+|   `-- package.json
+|-- web/
+|-- Makefile
+|-- run_all.ps1
+|-- start-prod.ps1
+`-- start-prod.sh
+```
 
-### 📊 Мониторинг
-- [ ] **Алерты:** Настраиваемые уведомления при превышении порогов (CPU > 90%)
-- [ ] **История метрик:** Хранение метрик в Prometheus + Grafana дашборды
-- [ ] **Логи ВМ:** Доступ к консольным логам ВМ через интерфейс
+## Notes
 
----
-
-## 🚀 Версия 3.0.0 — "Кластер и высокая доступность" (Q1 2027)
-
-### ☁️ Кластеризация
-- [ ] **Multi-Host управление:** Полноценное управление несколькими физическими хостами из одного интерфейса
-- [ ] **Миграция ВМ:** Live migration между хостами без остановки сервисов
-- [ ] **Балансировка:** Автоматическое распределение ВМ по хостам на основе нагрузки
-- [ ] **Отказоустойчивость (HA):** Автоматический перезапуск ВМ на другом хосте при сбое
-
-### 🔒 Безопасность
-- [ ] **Роли (RBAC):** Разграничение прав (админ, оператор, наблюдатель)
-- [ ] **Аудит:** Логирование всех действий пользователей
-- [ ] **Шифрование:** Поддержка зашифрованных дисков ВМ
-
-### 🛠️ Управление
-- [ ] **Шаблоны ВМ:** Создание ВМ из готовых параметризованных шаблонов
-- [ ] **SSH-ключи:** Управление SSH-ключами для доступа к ВМ
-- [ ] **Cloud-init:** Интеграция для автоматической настройки ВМ при первом запуске
-
----
-
-## 🚀 Версия 3.2.0 — "Интеграция и экосистема" (Q3 2027)
-
-### 🔌 Плагины
-- [ ] **Plugin System:** Возможность писать плагины на Python для расширения функционала
-- [ ] **Маркетплейс:** Каталог готовых плагинов и образов
-
-### 🤝 Интеграции
-- [ ] **Terraform Provider:** Управление ресурсами CEE через Terraform
-- [ ] **Ansible Collection:** Модули для Ansible
-- [ ] **Prometheus Exporter:** Готовый экспортер метрик
-
-### 🖥️ Интерфейс
-- [ ] **Встроенная консоль VNC/SPICE:** Просмотр экрана ВМ прямо в интерфейсе
-- [ ] **Мобильное приложение:** Базовое управление (пуск/стоп/мониторинг) с телефона
-- [ ] **Web версия:** Отдельный веб-интерфейс без Electron
-
----
-
-## 🏆 Долгосрочное видение (2028+)
-
-### Идеи и эксперименты
-- [ ] **Интеграция с Docker/containerd:** Запуск контейнеров рядом с ВМ
-- [ ] **Гибридные облака:** Управление локальными и облачными (AWS/Azure) ресурсами
-- [ ] **AI-оптимизация:** Рекомендации по размещению ВМ на основе машинного обучения
-- [ ] **Edge-версия:** Облегченный вариант для IoT и Edge-устройств
-
----
-
-## 📊 Легенда статусов
-
-| Статус | Значение |
-|:------:|:---------|
-| ✅ | Реализовано |
-| 🚧 | В разработке |
-| ⏳ | Запланировано |
-| 💡 | Идея / исследование |
-
----
-
-**Вместе мы сделаем CEE Hypervisor лучшей open-source платформой для виртуализации!** 🚀
+- Docker-based startup files were removed from the active project tree.
+- Legacy duplicate project snapshots were removed to keep one supported workflow.
+- If libvirt is unavailable, endpoints that depend on it can return backend errors until the host environment is configured correctly.

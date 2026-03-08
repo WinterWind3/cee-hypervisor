@@ -1,12 +1,10 @@
-.PHONY: help setup dev stop clean docker-up docker-down test
+.PHONY: help setup build-prod start-prod test clean
 
 help:
 	@echo "Доступные команды:"
 	@echo "  make setup    - установка всех зависимостей"
-	@echo "  make dev      - запуск в режиме разработки"
-	@echo "  make stop     - остановка dev режима"
-	@echo "  make docker-up  - запуск через Docker"
-	@echo "  make docker-down - остановка Docker"
+	@echo "  make build-prod - сборка production frontend"
+	@echo "  make start-prod - запуск приложения в production режиме"
 	@echo "  make test     - запуск тестов"
 	@echo "  make clean    - очистка временных файлов"
 
@@ -16,18 +14,11 @@ setup:
 	@cd frontend && npm install
 	@echo "✅ Готово"
 
-dev:
-	@./scripts/start-dev.sh
+build-prod:
+	@cd frontend && npm run build
 
-stop:
-	@./scripts/stop-dev.sh
-
-docker-up:
-	@docker-compose up -d
-	@echo "✅ Сервисы запущены: http://localhost:3000"
-
-docker-down:
-	@docker-compose down
+start-prod:
+	@./start-prod.sh
 
 test:
 	@cd backend && pytest -v
@@ -36,5 +27,5 @@ test:
 clean:
 	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f -name "*.pyc" -delete
-	@rm -rf backend/venv frontend/node_modules
+	@rm -rf frontend/node_modules frontend/build
 	@echo "✅ Очистка завершена"
