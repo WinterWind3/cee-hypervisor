@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.database import init_db
-from app.api.endpoints import vms, images, servers, clusters, networks, storage
+from app.api.endpoints import vms, images, servers, clusters, networks, storage, backups
 
 # Настройка логирования
 logging.basicConfig(
@@ -90,6 +90,7 @@ app.include_router(servers.router, prefix="/api", tags=["servers"])
 app.include_router(clusters.router, prefix="/api", tags=["clusters"])
 app.include_router(networks.router, prefix="/api", tags=["networks"])
 app.include_router(storage.router, prefix="/api", tags=["storage"])
+app.include_router(backups.router, prefix="/api", tags=["backups"])
 
 
 @app.get("/api/vms/{name}/console")

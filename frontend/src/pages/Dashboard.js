@@ -119,7 +119,7 @@ const Dashboard = () => {
       <AppToast message={updateMsg} />
       <PageActions meta="Статистика обновляется автоматически каждые 15 секунд.">
         <RefreshButton onClick={() => loadStats(true)} loading={loading} />
-        <ActionButton icon={Plus} label="Создать ВМ" onClick={() => navigate('/vms')} />
+        <ActionButton icon={Plus} label="Создать ВМ" onClick={() => navigate('/vms?action=create')} />
         <ActionButton icon={HardDrive} label="Загрузить образ" onClick={() => navigate('/images')} />
       </PageActions>
 
@@ -161,7 +161,7 @@ const Dashboard = () => {
       <div className="card">
         <h2 className="text-xl font-semibold text-white mb-4">Быстрые действия</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <button className="btn-primary page-toolbar-button" onClick={() => navigate('/vms')}>Создать ВМ</button>
+          <button className="btn-primary page-toolbar-button" onClick={() => navigate('/vms?action=create')}>Создать ВМ</button>
           <button className="btn page-toolbar-button" onClick={() => navigate('/images')}>Загрузить образ</button>
           <button className="btn page-toolbar-button" onClick={() => navigate('/servers')}>Открыть серверы</button>
           <button className="btn page-toolbar-button" onClick={() => navigate('/clusters')}>Открыть кластеры</button>

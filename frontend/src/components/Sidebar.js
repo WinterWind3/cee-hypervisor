@@ -11,7 +11,9 @@ import {
   Layers,
   Monitor,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Settings,
+  Shield
 } from 'lucide-react';
 
 const menuItems = [
@@ -62,6 +64,18 @@ const menuItems = [
     name: 'Хранилища',
     icon: Database,
     color: 'text-cyan-400'
+  },
+  {
+    path: '/security',
+    name: 'Безопасность',
+    icon: Shield,
+    color: 'text-yellow-400'
+  },
+  {
+    path: '/settings',
+    name: 'Настройки',
+    icon: Settings,
+    color: 'text-gray-400'
   }
 ];
 

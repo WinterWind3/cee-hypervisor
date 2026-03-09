@@ -1,0 +1,30 @@
+        <div className="card">
+          <EmptyState
+            icon={Server}
+            title="Серверы не найдены"
+            description="Подключите сервер, чтобы он появился здесь."
+            action={{ label: 'Добавить', onClick: () => setIsCreateModalOpen(true) }}
+          />
+        </div>
+      ) : (
+      <div className="card"><div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-dark-700"><th className="table-header-cell text-left">Имя</th><th className="table-header-cell text-left">Hostname / IP</th><th className="table-header-cell text-left">Статус</th><th className="table-header-cell text-left">Ядра CPU</th><th className="table-header-cell text-left">ОЗУ</th><th className="table-header-cell text-left">Кластер</th><th className="table-header-cell-right">Действия</th></tr></thead><tbody>
+        {servers.map((server, index) => (
+          <ResourceCard
+            key={server.id}            onDelete={() => handleDelete(server.id)}            icon={Server}
+            iconBgClass="bg-purple-600"
+            title={server.name || `server-${index + 1}`}
+            subtitle={server.hostname || server.host || '-'}
+            statusLabel={getStatusLabel(server.status)}
+            statusColorClass={getStatusColor(server.status)}
+            stats={[
+              { icon: Activity, iconClass: 'text-blue-400', label: 'Ядра CPU', value: `${server.cpu_cores ?? 0} ядер` },
+              { icon: HardDrive, iconClass: 'text-green-400', label: 'ОЗУ', value: formatMemoryGb(server.memory_total || server.memory_mb || 0) },
+            ]}
+            footerText={`Кластер: ${server.cluster || server.cluster_name || '-'}`}
+            footerIcon={Wifi}
+            footerIconClass="text-green-400"
+          />
+        ))}
+      </div>
+      )}
+

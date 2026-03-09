@@ -58,6 +58,16 @@ const VM_PRESET_CONFIG = {
   },
 };
 
+const stringToNumericId = (str) => {
+  if (!str) return '-';
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash) % 1000;
+};
+
 const VirtualMachines = () => {
   const [vms, setVms] = useState([]);
   const [storagePools, setStoragePools] = useState([]);
@@ -169,6 +179,7 @@ const VirtualMachines = () => {
   );
 
   const selectedVmName = searchParams.get('vm') || '';
+  const isCreateAction = searchParams.get('action') === 'create';
   const selectedPoolName = searchParams.get('pool') || '';
   const selectedVolumeName = searchParams.get('volume') || '';
   const activeQueryIndicators = useMemo(() => {
@@ -186,7 +197,7 @@ const VirtualMachines = () => {
     }
   }, [selectedVmName, vms]);
 
-  const [showCreate, setShowCreate] = useState(false);
+  const [showCreate, setShowCreate] = useState(isCreateAction);
   const [newVm, setNewVm] = useState({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10, disk_mode: 'create', storage_pool: '', existing_volume: '' });
 
   const usedStorageVolumeKeys = useMemo(
@@ -325,6 +336,7 @@ const VirtualMachines = () => {
     openDialog({
       title: `Параметры ВМ ${vm.name}`,
       message:
+        `ID: ${vm.id ? stringToNumericId(vm.id) : '-'}\n` +
         `Ядра CPU: ${vm.cpu_cores ?? vm.cpu}\n` +
         `ОЗУ: ${vm.memory_mb ?? vm.memory} MB\n` +
         `Диск: ${vm.disk_gb ?? vm.disk ?? '-'} GB\n` +
@@ -483,6 +495,7 @@ const VirtualMachines = () => {
             <thead>
               <tr className="border-b border-dark-700">
                 <th className="table-header-cell text-left">Имя</th>
+                <th className="table-header-cell text-left">ID</th>
                 <th className="table-header-cell text-left">Статус</th>
                 <th className="table-header-cell text-left">Ядра CPU</th>
                 <th className="table-header-cell text-left">ОЗУ</th>
@@ -505,6 +518,9 @@ const VirtualMachines = () => {
                   className={`border-b border-dark-700 hover:bg-dark-700/50 ${selectedVmName === vm.name ? 'bg-cyan-500/10' : ''}`}
                 >
                   <td className="table-cell-strong font-medium">{vm.name}</td>
+                  <td className="table-cell-muted font-mono text-xs" title={vm.id}>
+                    {vm.id ? stringToNumericId(vm.id) : '-'}
+                  </td>
                   <td className="table-cell">
                     <div className="flex items-center space-x-2">
                       <div className={`w-2 h-2 rounded-full ${getStatusColor(vm.status)}`}></div>

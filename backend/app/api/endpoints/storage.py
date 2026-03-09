@@ -8,6 +8,8 @@ import libvirt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.core.backups import summarize_backups_status
+
 
 router = APIRouter()
 
@@ -21,6 +23,8 @@ class StorageVolumeItem(BaseModel):
   path: str
   format: str
   attached_vm: str | None = None
+  target_dev: str | None = None
+  is_primary_disk: bool = False
 
 
 class StoragePoolItem(BaseModel):
@@ -65,6 +69,10 @@ class StorageActionResponse(BaseModel):
   name: str
   status: str
   message: str
+
+
+class StorageVolumeAttachRequest(BaseModel):
+  vm_name: str
 
 
 def _get_libvirt_conn() -> libvirt.virConnect:  # type: ignore[name-defined]
@@ -188,13 +196,13 @@ def _get_volume_path(volume: libvirt.virStorageVol) -> str:  # type: ignore[name
     return '-'
 
 
-def _get_attached_vm_names_by_disk_path(conn: libvirt.virConnect) -> dict[str, str]:  # type: ignore[name-defined]
+def _get_attached_disk_metadata_by_path(conn: libvirt.virConnect) -> dict[str, dict[str, str | bool | None]]:  # type: ignore[name-defined]
   try:
     domains = conn.listAllDomains()  # type: ignore[no-untyped-call]
   except libvirt.libvirtError:
     return {}
 
-  attached: dict[str, str] = {}
+  attached: dict[str, dict[str, str | bool | None]] = {}
   for dom in domains:
     try:
       vm_name = dom.name()  # type: ignore[no-untyped-call]
@@ -202,8 +210,9 @@ def _get_attached_vm_names_by_disk_path(conn: libvirt.virConnect) -> dict[str, s
     except Exception:
       continue
 
-    for disk_node in root.findall("./devices/disk[@device='disk']/source"):
-      disk_path = disk_node.get('file') or disk_node.get('dev') or disk_node.get('name')
+    for disk_node in root.findall("./devices/disk[@device='disk']"):
+      source_node = disk_node.find('./source')
+      disk_path = source_node.get('file') or source_node.get('dev') or source_node.get('name') if source_node is not None else None
       if not disk_path:
         continue
 
@@ -212,15 +221,30 @@ def _get_attached_vm_names_by_disk_path(conn: libvirt.virConnect) -> dict[str, s
       except OSError:
         continue
 
-      attached.setdefault(normalized_disk_path, vm_name)
+      target_node = disk_node.find('./target')
+      target_dev = target_node.get('dev') if target_node is not None else None
+      attached.setdefault(normalized_disk_path, {
+        'vm_name': vm_name,
+        'target_dev': target_dev,
+        'is_primary_disk': target_dev == 'vda',
+      })
 
   return attached
+
+
+def _get_attached_vm_names_by_disk_path(conn: libvirt.virConnect) -> dict[str, str]:  # type: ignore[name-defined]
+  attached_disk_metadata = _get_attached_disk_metadata_by_path(conn)
+  return {
+    disk_path: str(metadata['vm_name'])
+    for disk_path, metadata in attached_disk_metadata.items()
+    if metadata.get('vm_name')
+  }
 
 
 def _list_pool_volumes(
   pool: libvirt.virStoragePool,
   pool_name: str,
-  attached_vm_by_disk_path: dict[str, str],
+  attached_disk_metadata_by_path: dict[str, dict[str, str | bool | None]],
 ) -> list[StorageVolumeItem]:  # type: ignore[name-defined]
   volumes: list[StorageVolumeItem] = []
 
@@ -238,8 +262,15 @@ def _list_pool_volumes(
       size_bytes = int(info[1]) if len(info) > 1 else 0
       volume_path = _get_volume_path(volume)
       attached_vm = None
+      target_dev = None
+      is_primary_disk = False
       if volume_path and volume_path != '-':
-        attached_vm = attached_vm_by_disk_path.get(os.path.abspath(volume_path))
+        attachment_metadata = attached_disk_metadata_by_path.get(os.path.abspath(volume_path)) or {}
+        attached_vm_value = attachment_metadata.get('vm_name')
+        target_dev_value = attachment_metadata.get('target_dev')
+        attached_vm = str(attached_vm_value) if attached_vm_value else None
+        target_dev = str(target_dev_value) if target_dev_value else None
+        is_primary_disk = bool(attachment_metadata.get('is_primary_disk'))
       volumes.append(
         StorageVolumeItem(
           id=f"{pool_name}:{volume_name}",
@@ -250,6 +281,8 @@ def _list_pool_volumes(
           path=volume_path,
           format=_get_volume_format(volume),
           attached_vm=attached_vm,
+          target_dev=target_dev,
+          is_primary_disk=is_primary_disk,
         )
       )
     except libvirt.libvirtError:
@@ -266,13 +299,13 @@ def _collect_storage_state(conn: libvirt.virConnect) -> StorageResponse:  # type
 
   pools: list[StoragePoolItem] = []
   volumes: list[StorageVolumeItem] = []
-  attached_vm_by_disk_path = _get_attached_vm_names_by_disk_path(conn)
+  attached_disk_metadata_by_path = _get_attached_disk_metadata_by_path(conn)
 
   for pool in raw_pools:
     try:
       pool_name = pool.name()  # type: ignore[no-untyped-call]
       state, capacity, allocation, available = _get_pool_info(pool)
-      pool_volumes = _list_pool_volumes(pool, pool_name, attached_vm_by_disk_path)
+      pool_volumes = _list_pool_volumes(pool, pool_name, attached_disk_metadata_by_path)
       autostart = False
       try:
         autostart = bool(pool.autostart())  # type: ignore[no-untyped-call]
@@ -301,7 +334,7 @@ def _collect_storage_state(conn: libvirt.virConnect) -> StorageResponse:  # type
     pools_count=len(pools),
     active_pools_count=sum(1 for pool in pools if pool.status == 'online'),
     volumes_count=len(volumes),
-    backups_status='Недоступно',
+    backups_status=summarize_backups_status(),
   )
 
   pools.sort(key=lambda pool: pool.name.lower())
@@ -314,7 +347,10 @@ def _get_volume_attached_vm_name(conn: libvirt.virConnect, volume: libvirt.virSt
   if not volume_path or volume_path == '-':
     return None
 
-  return _get_attached_vm_names_by_disk_path(conn).get(os.path.abspath(volume_path))
+  attached_disk_metadata = _get_attached_disk_metadata_by_path(conn)
+  attachment_metadata = attached_disk_metadata.get(os.path.abspath(volume_path)) or {}
+  attached_vm_name = attachment_metadata.get('vm_name')
+  return str(attached_vm_name) if attached_vm_name else None
 
 
 def _get_pool_or_404(conn: libvirt.virConnect, pool_name: str) -> libvirt.virStoragePool:  # type: ignore[name-defined]
@@ -329,6 +365,99 @@ def _get_volume_or_404(pool: libvirt.virStoragePool, volume_name: str) -> libvir
     return pool.storageVolLookupByName(volume_name)  # type: ignore[no-untyped-call]
   except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
     raise HTTPException(status_code=404, detail=f"Том '{volume_name}' не найден: {exc}")
+
+
+def _get_domain_or_404(conn: libvirt.virConnect, vm_name: str) -> libvirt.virDomain:  # type: ignore[name-defined]
+  try:
+    return conn.lookupByName(vm_name)  # type: ignore[no-untyped-call]
+  except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+    raise HTTPException(status_code=404, detail=f"ВМ '{vm_name}' не найдена: {exc}")
+
+
+def _get_domain_disk_nodes(dom: libvirt.virDomain) -> list[ET.Element]:  # type: ignore[name-defined]
+  try:
+    root = ET.fromstring(dom.XMLDesc())  # type: ignore[no-untyped-call]
+  except Exception as exc:
+    raise HTTPException(status_code=500, detail=f"Не удалось прочитать XML виртуальной машины: {exc}")
+
+  return root.findall("./devices/disk[@device='disk']")
+
+
+def _get_disk_source_path(disk_node: ET.Element) -> str | None:
+  source_node = disk_node.find('./source')
+  if source_node is None:
+    return None
+
+  disk_path = source_node.get('file') or source_node.get('dev') or source_node.get('name')
+  if not disk_path:
+    return None
+
+  try:
+    return os.path.abspath(disk_path)
+  except OSError:
+    return None
+
+
+def _next_virtio_disk_target(dom: libvirt.virDomain) -> str:  # type: ignore[name-defined]
+  used_targets: set[str] = set()
+  for disk_node in _get_domain_disk_nodes(dom):
+    target_node = disk_node.find('./target')
+    target_dev = target_node.get('dev') if target_node is not None else None
+    if target_dev:
+      used_targets.add(target_dev)
+
+  for code in range(ord('b'), ord('z') + 1):
+    candidate = f"vd{chr(code)}"
+    if candidate not in used_targets:
+      return candidate
+
+  raise HTTPException(status_code=400, detail='У ВМ больше нет свободных virtio-слотов для подключения диска')
+
+
+def _build_volume_disk_xml(volume_path: str, target_dev: str, format_type: str) -> str:
+  return (
+    "<disk type='file' device='disk'>"
+    f"<driver name='qemu' type='{format_type}'/>"
+    f"<source file='{volume_path}'/>"
+    f"<target dev='{target_dev}' bus='virtio'/>"
+    "</disk>"
+  )
+
+
+def _get_domain_affect_flags(dom: libvirt.virDomain) -> int:  # type: ignore[name-defined]
+  config_flag = int(getattr(libvirt, 'VIR_DOMAIN_AFFECT_CONFIG', 2))
+  live_flag = int(getattr(libvirt, 'VIR_DOMAIN_AFFECT_LIVE', 1))
+
+  try:
+    is_active = dom.isActive() == 1  # type: ignore[no-untyped-call]
+  except libvirt.libvirtError:
+    is_active = False
+
+  return config_flag | (live_flag if is_active else 0)
+
+
+def _find_volume_disk_xml(dom: libvirt.virDomain, volume_path: str) -> str | None:  # type: ignore[name-defined]
+  normalized_volume_path = os.path.abspath(volume_path)
+  for disk_node in _get_domain_disk_nodes(dom):
+    disk_source_path = _get_disk_source_path(disk_node)
+    if disk_source_path != normalized_volume_path:
+      continue
+    return ET.tostring(disk_node, encoding='unicode')
+  return None
+
+
+def _is_primary_domain_disk(dom: libvirt.virDomain, volume_path: str) -> bool:  # type: ignore[name-defined]
+  normalized_volume_path = os.path.abspath(volume_path)
+  for disk_node in _get_domain_disk_nodes(dom):
+    disk_source_path = _get_disk_source_path(disk_node)
+    if disk_source_path != normalized_volume_path:
+      continue
+
+    target_node = disk_node.find('./target')
+    target_dev = target_node.get('dev') if target_node is not None else None
+    return target_dev == 'vda'
+
+  return False
 
 
 @router.get('/storage', response_model=StorageResponse)
@@ -522,6 +651,8 @@ async def create_storage_volume(payload: StorageVolumeCreate) -> StorageVolumeIt
     path=_get_volume_path(volume),
     format=_get_volume_format(volume),
     attached_vm=None,
+    target_dev=None,
+    is_primary_disk=False,
   )
 
 
@@ -546,3 +677,82 @@ async def delete_storage_volume(pool_name: str, volume_name: str) -> StorageActi
     raise HTTPException(status_code=500, detail=f"Ошибка удаления тома: {exc}")
 
   return StorageActionResponse(name=volume_name, status='deleted', message='Том удален')
+
+
+@router.post('/storage/volumes/{pool_name}/{volume_name:path}/attach', response_model=StorageActionResponse)
+async def attach_storage_volume(pool_name: str, volume_name: str, payload: StorageVolumeAttachRequest) -> StorageActionResponse:
+  vm_name = payload.vm_name.strip()
+  if not vm_name:
+    raise HTTPException(status_code=400, detail='Имя ВМ обязательно')
+
+  conn = _get_libvirt_conn()
+  pool = _get_pool_or_404(conn, pool_name)
+  volume = _get_volume_or_404(pool, volume_name)
+  attached_vm_name = _get_volume_attached_vm_name(conn, volume)
+
+  if attached_vm_name:
+    raise HTTPException(
+      status_code=400,
+      detail=f"Том '{volume_name}' уже подключен к виртуальной машине '{attached_vm_name}'",
+    )
+
+  dom = _get_domain_or_404(conn, vm_name)
+  volume_path = _get_volume_path(volume)
+  if not volume_path or volume_path == '-':
+    raise HTTPException(status_code=500, detail=f"Не удалось определить путь тома '{volume_name}'")
+
+  disk_xml = _build_volume_disk_xml(volume_path, _next_virtio_disk_target(dom), _get_volume_format(volume))
+
+  try:
+    dom.attachDeviceFlags(disk_xml, _get_domain_affect_flags(dom))  # type: ignore[no-untyped-call]
+  except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+    raise HTTPException(status_code=500, detail=f"Ошибка подключения тома к ВМ: {exc}")
+
+  return StorageActionResponse(
+    name=volume_name,
+    status='attached',
+    message=f"Том '{volume_name}' подключен к ВМ '{vm_name}'",
+  )
+
+
+@router.post('/storage/volumes/{pool_name}/{volume_name:path}/detach', response_model=StorageActionResponse)
+async def detach_storage_volume(pool_name: str, volume_name: str) -> StorageActionResponse:
+  conn = _get_libvirt_conn()
+  pool = _get_pool_or_404(conn, pool_name)
+  volume = _get_volume_or_404(pool, volume_name)
+  attached_vm_name = _get_volume_attached_vm_name(conn, volume)
+
+  if not attached_vm_name:
+    raise HTTPException(status_code=400, detail=f"Том '{volume_name}' сейчас не подключен ни к одной ВМ")
+
+  dom = _get_domain_or_404(conn, attached_vm_name)
+  volume_path = _get_volume_path(volume)
+  if not volume_path or volume_path == '-':
+    raise HTTPException(status_code=500, detail=f"Не удалось определить путь тома '{volume_name}'")
+
+  disk_xml = _find_volume_disk_xml(dom, volume_path)
+  if not disk_xml:
+    raise HTTPException(
+      status_code=400,
+      detail=f"Не удалось найти подключение тома '{volume_name}' в конфигурации ВМ '{attached_vm_name}'",
+    )
+
+  if _is_primary_domain_disk(dom, volume_path):
+    raise HTTPException(
+      status_code=400,
+      detail=(
+        f"Том '{volume_name}' является основным диском виртуальной машины '{attached_vm_name}' "
+        "и не может быть отключен со страницы хранилища"
+      ),
+    )
+
+  try:
+    dom.detachDeviceFlags(disk_xml, _get_domain_affect_flags(dom))  # type: ignore[no-untyped-call]
+  except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+    raise HTTPException(status_code=500, detail=f"Ошибка отключения тома от ВМ: {exc}")
+
+  return StorageActionResponse(
+    name=volume_name,
+    status='detached',
+    message=f"Том '{volume_name}' отключен от ВМ '{attached_vm_name}'",
+  )

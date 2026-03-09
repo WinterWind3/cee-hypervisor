@@ -1,0 +1,11 @@
+[
+  {
+    "id": "af60363d-f18f-48cf-bc91-58c0ac0b150a",
+    "name": "Sv2",
+    "hostname": "10.0.0.2",
+    "cluster": "DESKTOP-1GSN57A-cluster",
+    "status": "offline",
+    "cpu_cores": 0,
+    "memory_total": 0
+  }
+]

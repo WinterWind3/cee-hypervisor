@@ -70,7 +70,9 @@ export const apiService = {
   updateServer: (id, data) => api.put(`/api/servers/${id}`, data),
   deleteServer: (id) => api.delete(`/api/servers/${id}`),
   getServerMetrics: (id) => api.get(`/api/servers/${id}/metrics`),
-  
+  startServer: (id) => api.post(`/api/servers/${id}/start`),
+  stopServer: (id) => api.post(`/api/servers/${id}/stop`),
+
   // Clusters
   getClusters: () => api.get('/api/clusters'),
   getCluster: (id) => api.get(`/api/clusters/${id}`),
@@ -79,6 +81,8 @@ export const apiService = {
   deleteCluster: (id) => api.delete(`/api/clusters/${id}`),
   addHostToCluster: (clusterId, hostData) => api.post(`/api/clusters/${clusterId}/hosts`, hostData),
   removeHostFromCluster: (clusterId, hostId) => api.delete(`/api/clusters/${clusterId}/hosts/${hostId}`),
+  startCluster: (id) => api.post(`/api/clusters/${id}/start`),
+  stopCluster: (id) => api.post(`/api/clusters/${id}/stop`),
 
   // Networks
   getNetworks: () => api.get('/api/networks'),

@@ -57,3 +57,9 @@ def test_get_storage():
 	"""Проверка списка хранилищ (если libvirt доступен)."""
 	response = client.get("/api/storage")
 	assert response.status_code in (200, 500)
+
+
+def test_get_backups():
+	"""Проверка списка резервных копий."""
+	response = client.get("/api/backups")
+	assert response.status_code == 200

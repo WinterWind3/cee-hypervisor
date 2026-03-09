@@ -9,6 +9,8 @@ import Servers from './pages/Servers';
 import Clusters from './pages/Clusters';
 import Network from './pages/Network';
 import Storage from './pages/Storage';
+import SettingsPage from './pages/Settings';
+import Security from './pages/Security';
 
 function App() {
   return (
@@ -25,6 +27,7 @@ function App() {
             <Route path="/clusters" element={<Clusters />} />
             <Route path="/network" element={<Network />} />
             <Route path="/storage" element={<Storage />} />
+            <Route path="/settings" element={<SettingsPage />} />            <Route path="/security" element={<Security />} />
           </Routes>
         </Layout>
       </div>
