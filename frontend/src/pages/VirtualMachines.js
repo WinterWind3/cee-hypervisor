@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Play, Square, RotateCcw, Plus, Settings, Monitor } from 'lucide-react';
 import { apiService } from '../services/api';
 import ActionButton from '../components/ActionButton';
@@ -15,6 +15,8 @@ import { useTimedMessage } from '../hooks/useTimedMessage';
 
 const VirtualMachines = () => {
   const [vms, setVms] = useState([]);
+  const [storagePools, setStoragePools] = useState([]);
+  const [storageVolumes, setStorageVolumes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -24,28 +26,36 @@ const VirtualMachines = () => {
   const { dialog, openDialog, closeDialog } = useDialog();
   const { message: updateMsg, showMessage: showUpdateMessage } = useTimedMessage();
 
-  const loadVMs = async () => {
+  const loadVMs = useCallback(async (showMessage = true) => {
     try {
       setLoading(true);
       setError(null);
-      const response = await apiService.getVMs();
-      setVms(response.data || []);
-      showUpdateMessage('Обновление выполнено');
+      const [vmResponse, storageResponse] = await Promise.all([
+        apiService.getVMs(),
+        apiService.getStorage(),
+      ]);
+      setVms(vmResponse.data || []);
+      setStoragePools(Array.isArray(storageResponse.data?.pools) ? storageResponse.data.pools : []);
+      setStorageVolumes(Array.isArray(storageResponse.data?.volumes) ? storageResponse.data.volumes : []);
+      if (showMessage) {
+        showUpdateMessage('Обновление выполнено');
+      }
     } catch (err) {
       setError(
         err.response?.data?.detail ||
           err.message ||
           'Ошибка загрузки списка виртуальных машин'
       );
+      setStoragePools([]);
+      setStorageVolumes([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [showUpdateMessage]);
 
   useEffect(() => {
-    loadVMs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    loadVMs(false);
+  }, [loadVMs]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -102,28 +112,62 @@ const VirtualMachines = () => {
     await runVmAction(id, 'restart', apiService.restartVM, 'Не удалось перезапустить ВМ');
   };
 
+  const activeStoragePools = useMemo(
+    () => storagePools.filter((pool) => pool.status === 'online' || pool.status === 'degraded' || pool.status === 'building'),
+    [storagePools]
+  );
+
   const [showCreate, setShowCreate] = useState(false);
-  const [newVm, setNewVm] = useState({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10 });
+  const [newVm, setNewVm] = useState({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10, disk_mode: 'create', storage_pool: '', existing_volume: '' });
+
+  const usedStorageVolumeKeys = useMemo(
+    () => new Set(
+      vms
+        .filter((vm) => vm.storage_pool && vm.storage_volume)
+        .map((vm) => `${vm.storage_pool}::${vm.storage_volume}`)
+    ),
+    [vms]
+  );
+
+  const availableExistingVolumes = useMemo(() => {
+    if (!newVm.storage_pool) {
+      return [];
+    }
+    return storageVolumes.filter(
+      (volume) => volume.pool === newVm.storage_pool && !usedStorageVolumeKeys.has(`${volume.pool}::${volume.name}`)
+    );
+  }, [newVm.storage_pool, storageVolumes, usedStorageVolumeKeys]);
 
   const handleCreate = () => {
     setCreateAttempted(false);
     setTouchedFields({});
+    setNewVm((current) => ({
+      ...current,
+      storage_pool: current.storage_pool || activeStoragePools[0]?.name || '',
+      existing_volume: '',
+    }));
     setShowCreate(true);
   };
 
   const handleCreateChange = (field) => (e) => {
     const value = e.target.value;
-    setNewVm((s) => ({ ...s, [field]: field === 'name' ? value : Number(value) }));
+    setNewVm((s) => ({
+      ...s,
+      existing_volume: field === 'disk_mode' || field === 'storage_pool' ? '' : s.existing_volume,
+      [field]: field === 'name' || field === 'storage_pool' || field === 'disk_mode' || field === 'existing_volume' ? value : Number(value),
+    }));
   };
 
   const createErrors = {
     name: !newVm.name.trim() ? 'Введите имя виртуальной машины.' : '',
     cpu_cores: Number(newVm.cpu_cores) < 1 ? 'Укажите хотя бы 1 ядро CPU.' : '',
     memory_mb: Number(newVm.memory_mb) < 128 ? 'Укажите не меньше 128 MB ОЗУ.' : '',
-    disk_gb: Number(newVm.disk_gb) < 1 ? 'Укажите размер диска не меньше 1 GB.' : '',
+    disk_gb: newVm.disk_mode === 'create' && Number(newVm.disk_gb) < 1 ? 'Укажите размер диска не меньше 1 GB.' : '',
+    storage_pool: newVm.disk_mode === 'existing' && !newVm.storage_pool ? 'Выберите пул хранения для существующего тома.' : '',
+    existing_volume: newVm.disk_mode === 'existing' && !newVm.existing_volume ? 'Выберите существующий том.' : '',
   };
 
-  const hasCreateErrors = Boolean(createErrors.name || createErrors.cpu_cores || createErrors.memory_mb || createErrors.disk_gb);
+  const hasCreateErrors = Boolean(createErrors.name || createErrors.cpu_cores || createErrors.memory_mb || createErrors.disk_gb || createErrors.storage_pool || createErrors.existing_volume);
 
   const isFieldInvalid = (field) => Boolean((createAttempted || touchedFields[field]) && createErrors[field]);
 
@@ -163,8 +207,8 @@ const VirtualMachines = () => {
       await apiService.createVM(newVm);
       resetCreateValidation();
       setShowCreate(false);
-      setNewVm({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10 });
-      await loadVMs();
+      setNewVm({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10, disk_mode: 'create', storage_pool: activeStoragePools[0]?.name || '', existing_volume: '' });
+      await loadVMs(false);
       openDialog({
         title: 'ВМ создана',
         message: `Виртуальная машина "${newVm.name}" успешно создана.`,
@@ -187,8 +231,11 @@ const VirtualMachines = () => {
       message:
         `Ядра CPU: ${vm.cpu_cores ?? vm.cpu}\n` +
         `ОЗУ: ${vm.memory_mb ?? vm.memory} MB\n` +
-        `Диск: ${vm.disk} GB\n` +
-        `Кластер: ${vm.cluster}`,
+        `Диск: ${vm.disk_gb ?? vm.disk ?? '-'} GB\n` +
+        `Хранилище: ${vm.storage_pool || 'Системный путь'}\n` +
+        `Том: ${vm.storage_volume || '-'}\n` +
+        `Путь: ${vm.disk_path || '-'}\n` +
+        `Кластер: ${vm.cluster_id ?? vm.cluster ?? '-'}`,
       variant: 'info',
     });
   };
@@ -197,7 +244,7 @@ const VirtualMachines = () => {
     <div className="space-y-6">
       <AppToast message={updateMsg} />
       <PageActions>
-        <RefreshButton onClick={loadVMs} loading={loading} />
+        <RefreshButton onClick={() => loadVMs(true)} loading={loading} />
         <ActionButton icon={Plus} label="Создать ВМ" onClick={handleCreate} />
       </PageActions>
 
@@ -228,10 +275,41 @@ const VirtualMachines = () => {
           {isFieldInvalid('memory_mb') && <p className="text-xs text-red-400">{createErrors.memory_mb}</p>}
         </div>
         <div className="modal-field">
+          <label className="modal-label">Режим диска</label>
+          <select className="input w-full" value={newVm.disk_mode} onChange={handleCreateChange('disk_mode')}>
+            <option value="create">Создать новый том</option>
+            <option value="existing">Использовать существующий том</option>
+          </select>
+        </div>
+        <div className="modal-field">
           <label className="modal-label">Диск (GB)</label>
-          <input type="number" min="1" className={getFieldClassName('disk_gb')} value={newVm.disk_gb} onChange={handleCreateChange('disk_gb')} onBlur={markFieldTouched('disk_gb')} />
+          <input type="number" min="1" className={getFieldClassName('disk_gb')} value={newVm.disk_gb} onChange={handleCreateChange('disk_gb')} onBlur={markFieldTouched('disk_gb')} disabled={newVm.disk_mode !== 'create'} />
           {isFieldInvalid('disk_gb') && <p className="text-xs text-red-400">{createErrors.disk_gb}</p>}
         </div>
+        <div className="modal-field">
+          <label className="modal-label">Хранилище</label>
+          <select className={getFieldClassName('storage_pool')} value={newVm.storage_pool} onChange={handleCreateChange('storage_pool')} onBlur={markFieldTouched('storage_pool')}>
+            <option value="">Системный путь (/var/lib/libvirt/images)</option>
+            {activeStoragePools.map((pool) => (
+              <option key={pool.id} value={pool.name}>{pool.name}</option>
+            ))}
+          </select>
+          {isFieldInvalid('storage_pool') && <p className="text-xs text-red-400">{createErrors.storage_pool}</p>}
+          <p className="text-xs text-dark-400">Если выбран пул хранения, диск ВМ будет создан как том qcow2 внутри этого пула.</p>
+        </div>
+        {newVm.disk_mode === 'existing' && (
+          <div className="modal-field">
+            <label className="modal-label">Существующий том</label>
+            <select className={getFieldClassName('existing_volume')} value={newVm.existing_volume} onChange={handleCreateChange('existing_volume')} onBlur={markFieldTouched('existing_volume')}>
+              <option value="">Выберите том</option>
+              {availableExistingVolumes.map((volume) => (
+                <option key={volume.id} value={volume.name}>{volume.name}</option>
+              ))}
+            </select>
+            {isFieldInvalid('existing_volume') && <p className="text-xs text-red-400">{createErrors.existing_volume}</p>}
+            {newVm.storage_pool && availableExistingVolumes.length === 0 && <p className="text-xs text-amber-300">В выбранном пуле пока нет доступных томов.</p>}
+          </div>
+        )}
       </FormModal>
 
       <AppDialog
@@ -264,7 +342,8 @@ const VirtualMachines = () => {
                 <th className="text-left py-3 px-4 font-medium text-dark-300">Ядра CPU</th>
                 <th className="text-left py-3 px-4 font-medium text-dark-300">ОЗУ</th>
                 <th className="text-left py-3 px-4 font-medium text-dark-300">Диск</th>
-                <th className="text-left py-3 px-4 font-medium text-dark-300">Кластер</th>
+                <th className="text-left py-3 px-4 font-medium text-dark-300">Хранилище</th>
+                <th className="text-left py-3 px-4 font-medium text-dark-300">Том</th>
                 <th className="text-left py-3 px-4 font-medium text-dark-300">Действия</th>
               </tr>
             </thead>
@@ -283,7 +362,8 @@ const VirtualMachines = () => {
                   <td className="py-3 px-4 text-dark-300">{vm.cpu_cores ?? vm.cpu} ядро</td>
                   <td className="py-3 px-4 text-dark-300">{vm.memory_mb ?? vm.memory} MB</td>
                   <td className="py-3 px-4 text-dark-300">{vm.disk_gb ?? vm.disk} GB</td>
-                  <td className="py-3 px-4 text-dark-300">{vm.cluster_id ?? vm.cluster ?? '-'}</td>
+                  <td className="py-3 px-4 text-dark-300">{vm.storage_pool || 'Системный путь'}</td>
+                  <td className="py-3 px-4 text-dark-300">{vm.storage_volume || '-'}</td>
                   <td className="py-3 px-4">
                     {(() => {
                       const isRowPending = pendingVmAction?.id === vm.id;

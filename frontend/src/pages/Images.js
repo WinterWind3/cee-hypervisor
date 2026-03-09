@@ -37,6 +37,10 @@ function buildImageEntry(name, size) {
   };
 }
 
+function isLikelyPosixPath(value) {
+  return value.startsWith('/') || value.startsWith('./') || value.startsWith('../') || value.startsWith('~/');
+}
+
 function mergeImages(currentImages, nextImages) {
   const map = new Map();
 
@@ -115,6 +119,7 @@ const Images = () => {
   });
   const [progress, setProgress] = useState(0); // 0-100
   const fetchRequestRef = useRef(0);
+  const fileInputRef = useRef(null);
   const { dialog, openDialog, closeDialog } = useDialog();
   const { message: updateMsg, showMessage: showUpdateMessage } = useTimedMessage();
   const allowedExtensions = ['.iso', '.qcow2', '.img', '.vmdk', '.vdi'];
@@ -125,16 +130,18 @@ const Images = () => {
   const isHttpUrl = /^https?:\/\//i.test(trimmedUrl);
   const isFileUrl = /^file:\/\//i.test(trimmedUrl);
   const isWindowsPath = /^[a-zA-Z]:[\\/]/.test(trimmedUrl) || /^\\\\/.test(trimmedUrl);
+  const isPosixFilePath = isLikelyPosixPath(trimmedUrl);
   const urlError = !trimmedUrl
     ? 'Укажите http(s) ссылку или локальный путь к файлу образа.'
     : !hasAllowedExtension
       ? 'Нужно указать путь именно к файлу ISO, QCOW2, IMG, VMDK или VDI.'
-      : !(isHttpUrl || isFileUrl || isWindowsPath)
-        ? 'Поддерживаются http(s), file:// и локальные пути Windows к файлу.'
+      : !(isHttpUrl || isFileUrl || isWindowsPath || isPosixFilePath)
+        ? 'Поддерживаются http(s), file://, локальные пути Windows и WSL/Linux к файлу.'
         : '';
   const isUrlInvalid = Boolean((urlAttempted || touchedFields.url) && urlError);
   const isFolderFileUrl = /^file:\/\//i.test(trimmedFolder);
   const isFolderWindowsPath = /^[a-zA-Z]:[\\/]/.test(trimmedFolder) || /^\\\\/.test(trimmedFolder);
+  const isFolderPosixPath = isLikelyPosixPath(trimmedFolder);
   const lowerTrimmedFolder = trimmedFolder.toLowerCase();
   const folderLooksLikeFile = allowedExtensions.some((ext) => lowerTrimmedFolder.endsWith(ext));
   const folderError = !trimmedFolder
@@ -143,8 +150,8 @@ const Images = () => {
       ? 'Для массового импорта укажите локальную папку, а не http(s) URL.'
       : folderLooksLikeFile
         ? 'Для массового импорта укажите путь к папке, а не к одному файлу.'
-        : !(isFolderFileUrl || isFolderWindowsPath)
-          ? 'Поддерживаются file:// и локальные пути Windows к папке.'
+        : !(isFolderFileUrl || isFolderWindowsPath || isFolderPosixPath)
+          ? 'Поддерживаются file://, локальные пути Windows и WSL/Linux к папке.'
           : '';
   const isFolderInvalid = Boolean((folderAttempted || touchedFields.folder) && folderError);
 
@@ -264,6 +271,9 @@ const Images = () => {
       if (event.target) {
         event.target.value = '';
       }
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
       return;
     }
 
@@ -301,6 +311,9 @@ const Images = () => {
       }
       if (event.target) {
         event.target.value = '';
+      }
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
     }
   };
@@ -463,103 +476,127 @@ const Images = () => {
       />
 
       {/* Upload Cards */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-stretch">
         {/* File Upload */}
         <div className="card">
-          <div className="flex flex-col items-center justify-center py-12">
+          <div className="flex h-full flex-col items-center py-12">
             <div className="w-16 h-16 bg-dark-700 rounded-lg flex items-center justify-center mb-4">
               <Upload className="w-8 h-8 text-green-400" />
             </div>
             <h3 className="text-lg font-medium text-white mb-2">Загрузить файл</h3>
-            <p className="text-dark-400 text-center mb-6">ISO, QCOW2, IMG</p>
-            
-            <label className={`btn-primary cursor-pointer ${isLoading ? 'pointer-events-none opacity-50' : ''}`}>
-              {activeUpload === 'file' ? 'Загрузка...' : 'Выбрать файл'}
-              <input 
-                type="file" 
-                className="hidden" 
-                accept=".iso,.qcow2,.img,.vmdk,.vdi"
-                onChange={handleFileUpload}
-                disabled={isLoading}
+            <div className="mb-6 flex min-h-[72px] items-center">
+              <p className="text-dark-400 text-center">ISO, QCOW2, IMG</p>
+            </div>
+
+            <div className="mt-auto flex w-full flex-col">
+              <input
+                type="text"
+                readOnly
+                value={selectedFileName}
+                placeholder="Выберите ISO, QCOW2, IMG, VMDK или VDI"
+                className={`input min-h-[44px] w-full ${fileError ? 'input-error' : ''}`}
               />
-            </label>
-            {selectedFileName && !fileError && (
-              <p className="mt-3 text-sm text-dark-300 text-center break-all">{selectedFileName}</p>
-            )}
-            {fileError && (
-              <p className="mt-3 text-xs text-red-400 text-center">{fileError}</p>
-            )}
+              <div className="min-h-[20px] pt-2">
+                {fileError && (
+                  <p className="text-xs text-red-400">{fileError}</p>
+                )}
+              </div>
+              <label className={`btn-primary min-h-[48px] w-full flex cursor-pointer items-center justify-center space-x-2 ${isLoading ? 'pointer-events-none opacity-50' : ''}`}>
+                {activeUpload === 'file' ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Upload className="w-4 h-4" />
+                )}
+                <span>{activeUpload === 'file' ? 'Загрузка...' : 'Выбрать файл'}</span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  accept=".iso,.qcow2,.img,.vmdk,.vdi"
+                  onChange={handleFileUpload}
+                  disabled={isLoading}
+                />
+              </label>
+            </div>
           </div>
         </div>
 
         {/* URL Upload */}
         <div className="card">
-          <div className="flex flex-col items-center justify-center py-12">
+          <div className="flex h-full flex-col items-center py-12">
             <div className="w-16 h-16 bg-dark-700 rounded-lg flex items-center justify-center mb-4">
               <LinkIcon className="w-8 h-8 text-blue-400" />
             </div>
             <h3 className="text-lg font-medium text-white mb-2">Загрузить по URL или пути</h3>
-            <p className="text-dark-400 text-center mb-6">http(s), file:// или локальный путь Windows к файлу образа</p>
+            <div className="mb-6 flex min-h-[72px] items-center">
+              <p className="text-dark-400 text-center">http(s), file://, путь Windows или WSL/Linux к файлу образа</p>
+            </div>
             
-            <div className="w-full space-y-3">
+            <div className="mt-auto flex w-full flex-col">
               <input
                 type="text"
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
                 onBlur={() => markFieldTouched('url')}
-                placeholder="C:\\Images\\ubuntu.iso или https://example.com/ubuntu.iso"
-                className={`input ${isUrlInvalid ? 'input-error' : ''}`}
+                placeholder="C:\\Images\\ubuntu.iso, /mnt/c/Images/ubuntu.iso или https://example.com/ubuntu.iso"
+                className={`input min-h-[44px] w-full ${isUrlInvalid ? 'input-error' : ''}`}
               />
-              {isUrlInvalid && (
-                <p className="text-xs text-red-400">{urlError}</p>
-              )}
+              <div className="min-h-[20px] pt-2">
+                {isUrlInvalid && (
+                  <p className="text-xs text-red-400">{urlError}</p>
+                )}
+              </div>
               <button 
                 onClick={handleUrlUpload}
                 disabled={isLoading || Boolean(urlError)}
-                className="btn-primary w-full flex items-center justify-center space-x-2 disabled:opacity-50"
+                className="btn-primary min-h-[48px] w-full flex items-center justify-center space-x-2 disabled:opacity-50"
               >
                 {activeUpload === 'url' ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
                   <Download className="w-4 h-4" />
                 )}
-                <span>Загрузить</span>
+                <span>Загрузить по URL</span>
               </button>
             </div>
           </div>
         </div>
 
         <div className="card">
-          <div className="flex flex-col items-center justify-center py-12">
+          <div className="flex h-full flex-col items-center py-12">
             <div className="w-16 h-16 bg-dark-700 rounded-lg flex items-center justify-center mb-4">
               <FolderOpen className="w-8 h-8 text-amber-400" />
             </div>
             <h3 className="text-lg font-medium text-white mb-2">Импортировать все из папки</h3>
-            <p className="text-dark-400 text-center mb-6">Скопировать все поддерживаемые образы из локального каталога в проект</p>
+            <div className="mb-6 flex min-h-[72px] items-center">
+              <p className="text-dark-400 text-center">Скопировать все поддерживаемые образы из локального каталога Windows или WSL/Linux в проект</p>
+            </div>
 
-            <div className="w-full space-y-3">
+            <div className="mt-auto flex w-full flex-col">
               <input
                 type="text"
                 value={folderInput}
                 onChange={(e) => setFolderInput(e.target.value)}
                 onBlur={() => markFieldTouched('folder')}
-                placeholder="C:\\Users\\Alexey\\Desktop\\min\\vNE\\Images"
-                className={`input ${isFolderInvalid ? 'input-error' : ''}`}
+                placeholder="C:\\Users\\Alexey\\Desktop\\min\\vNE\\Images или /mnt/c/Users/Alexey/Desktop/min/vNE/Images"
+                className={`input min-h-[44px] w-full ${isFolderInvalid ? 'input-error' : ''}`}
               />
-              {isFolderInvalid && (
-                <p className="text-xs text-red-400">{folderError}</p>
-              )}
+              <div className="min-h-[20px] pt-2">
+                {isFolderInvalid && (
+                  <p className="text-xs text-red-400">{folderError}</p>
+                )}
+              </div>
               <button
                 onClick={handleDirectoryImport}
                 disabled={isLoading || Boolean(folderError)}
-                className="btn-primary w-full flex items-center justify-center space-x-2 disabled:opacity-50"
+                className="btn-primary min-h-[48px] w-full flex items-center justify-center space-x-2 disabled:opacity-50"
               >
                 {activeUpload === 'folder' ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
                   <FolderOpen className="w-4 h-4" />
                 )}
-                <span>Импортировать папку</span>
+                <span>Импортировать все</span>
               </button>
             </div>
           </div>

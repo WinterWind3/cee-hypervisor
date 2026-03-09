@@ -86,7 +86,13 @@ export const apiService = {
 
   // Storage
   getStorage: () => api.get('/api/storage'),
+  createStoragePool: (data) => api.post('/api/storage/pools', data),
+  refreshStoragePool: (poolName) => api.post(`/api/storage/pools/${encodeURIComponent(poolName)}/refresh`),
+  startStoragePool: (poolName) => api.post(`/api/storage/pools/${encodeURIComponent(poolName)}/start`),
+  stopStoragePool: (poolName) => api.post(`/api/storage/pools/${encodeURIComponent(poolName)}/stop`),
+  deleteStoragePool: (poolName) => api.delete(`/api/storage/pools/${encodeURIComponent(poolName)}`),
   createStorageVolume: (data) => api.post('/api/storage/volumes', data),
+  deleteStorageVolume: (poolName, volumeName) => api.delete(`/api/storage/volumes/${encodeURIComponent(poolName)}/${encodeURIComponent(volumeName)}`),
   
   // Snapshots
   getSnapshots: (vmId) => api.get(`/api/vms/${vmId}/snapshots`),

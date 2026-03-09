@@ -81,7 +81,15 @@ The startup script does the following:
 - builds `frontend/build` if it does not exist, or when `--build` is passed
 - stops an existing backend process on port `8080`
 - starts FastAPI on `0.0.0.0:8080`
+- waits for `/api/health` to respond and prints a ready message
+- tries to open the app URL in the default browser automatically
 - serves both API routes and the React production bundle from the same process
+
+To disable browser auto-open for a single run:
+
+```bash
+OPEN_BROWSER=0 ./start-prod.sh --build
+```
 
 ## Makefile Commands
 

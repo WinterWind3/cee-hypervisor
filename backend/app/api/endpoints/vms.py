@@ -1,15 +1,17 @@
-
 import os
-from typing import List, Literal, TypedDict
-from typing_extensions import TypedDict
+import subprocess
+import xml.etree.ElementTree as ET
+from typing import List, Literal
 
 import libvirt
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 
-# Модели и router должны быть определены до всех endpoint-ов!
+router = APIRouter()
+DEFAULT_VM_IMAGES_DIR = "/var/lib/libvirt/images"
+
+
 class VMItem(BaseModel):
     id: str
     name: str
@@ -18,68 +20,26 @@ class VMItem(BaseModel):
     memory_mb: int | None = None
     disk_gb: int | None = None
     cluster_id: int | None = None
+    storage_pool: str | None = None
+    storage_volume: str | None = None
+    disk_path: str | None = None
 
-router = APIRouter()
 
-# Pydantic-схема для создания ВМ
 class VMCreate(BaseModel):
     name: str
     cpu_cores: int
     memory_mb: int
     disk_gb: int
-    # Можно добавить другие поля по необходимости
-
-# Endpoint для создания ВМ через libvirt
-@router.post("/vms", response_model=VMItem)
-async def create_vm(vm: VMCreate):
-    """Создать новую ВМ через libvirt."""
-    conn = _get_libvirt_conn()
-    # Минимальный XML для ВМ (qemu/kvm)
-    vm_xml = f'''
-    <domain type='kvm'>
-      <name>{vm.name}</name>
-      <memory unit='MiB'>{vm.memory_mb}</memory>
-      <vcpu>{vm.cpu_cores}</vcpu>
-      <os>
-        <type arch='x86_64'>hvm</type>
-      </os>
-      <devices>
-        <emulator>/usr/bin/qemu-system-x86_64</emulator>
-        <disk type='file' device='disk'>
-          <driver name='qemu' type='qcow2'/>
-          <source file='/var/lib/libvirt/images/{vm.name}.qcow2'/>
-          <target dev='vda' bus='virtio'/>
-        </disk>
-        <interface type='network'>
-          <source network='default'/>
-        </interface>
-        <graphics type='vnc' port='-1'/>
-      </devices>
-    </domain>
-    '''
-    try:
-        # Создать диск для ВМ (qcow2)
-        disk_path = f"/var/lib/libvirt/images/{vm.name}.qcow2"
-        if not os.path.exists(disk_path):
-            os.system(f"qemu-img create -f qcow2 {disk_path} {vm.disk_gb}G")
-        # Создать ВМ
-        dom = conn.defineXML(vm_xml)
-        if dom is None:
-            raise HTTPException(status_code=500, detail="Не удалось создать ВМ через libvirt")
-        return VMItem(
-            id=vm.name,
-            name=vm.name,
-            status=_vm_status_from_domain(dom),
-            cpu_cores=vm.cpu_cores,
-            memory_mb=vm.memory_mb,
-            disk_gb=vm.disk_gb,
-            cluster_id=None,
-        )
-    except libvirt.libvirtError as exc:
-        raise HTTPException(status_code=500, detail=f"Ошибка libvirt: {exc}")
+    disk_mode: Literal["create", "existing"] = "create"
+    storage_pool: str | None = None
+    existing_volume: str | None = None
 
 
-
+class VMDiskLocation(BaseModel):
+    disk_path: str
+    storage_pool: str | None
+    storage_volume: str
+    owns_disk: bool = True
 
 
 def _get_libvirt_conn() -> libvirt.virConnect:  # type: ignore[name-defined]
@@ -95,18 +55,299 @@ def _get_libvirt_conn() -> libvirt.virConnect:  # type: ignore[name-defined]
 
 def _vm_status_from_domain(dom: libvirt.virDomain) -> str:  # type: ignore[name-defined]
     try:
-        # isActive() возвращает 1 если домен запущен
         return "running" if dom.isActive() == 1 else "stopped"  # type: ignore[no-untyped-call]
     except libvirt.libvirtError:  # type: ignore[attr-defined]
         return "unknown"
 
 
+def _get_storage_pool_paths(conn: libvirt.virConnect) -> dict[str, str]:  # type: ignore[name-defined]
+    try:
+        pools = conn.listAllStoragePools()  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError:
+        return {}
+
+    pool_paths: dict[str, str] = {}
+    for pool in pools:
+        try:
+            xml_root = ET.fromstring(pool.XMLDesc(0))  # type: ignore[no-untyped-call]
+            pool_name = pool.name()  # type: ignore[no-untyped-call]
+            pool_path = xml_root.findtext("./target/path")
+            if pool_name and pool_path:
+                pool_paths[pool_name] = os.path.abspath(pool_path)
+        except Exception:
+            continue
+    return pool_paths
+
+
+def _get_attached_disk_paths(conn: libvirt.virConnect) -> set[str]:  # type: ignore[name-defined]
+    try:
+        domains = conn.listAllDomains()  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError:
+        return set()
+
+    disk_paths: set[str] = set()
+    for dom in domains:
+        try:
+            root = ET.fromstring(dom.XMLDesc())  # type: ignore[no-untyped-call]
+        except Exception:
+            continue
+
+        for disk_node in root.findall("./devices/disk[@device='disk']/source"):
+            disk_path = disk_node.get("file") or disk_node.get("dev") or disk_node.get("name")
+            if not disk_path:
+                continue
+            try:
+                disk_paths.add(os.path.abspath(disk_path))
+            except OSError:
+                continue
+
+    return disk_paths
+
+
+def _resolve_storage_pool_by_path(disk_path: str, pool_paths: dict[str, str]) -> str | None:
+    if not disk_path:
+        return None
+
+    normalized_disk_path = os.path.abspath(disk_path)
+    best_match: tuple[str, int] | None = None
+    for pool_name, pool_path in pool_paths.items():
+        try:
+            common_path = os.path.commonpath([normalized_disk_path, pool_path])
+        except ValueError:
+            continue
+        if common_path != pool_path:
+            continue
+        match_length = len(pool_path)
+        if best_match is None or match_length > best_match[1]:
+            best_match = (pool_name, match_length)
+    return best_match[0] if best_match else None
+
+
+def _get_disk_size_gb(disk_path: str | None) -> int | None:
+    if not disk_path or not os.path.exists(disk_path):
+        return None
+    try:
+        size_bytes = os.path.getsize(disk_path)
+        if size_bytes <= 0:
+            return None
+        gib = 1024 * 1024 * 1024
+        return max(1, int(round(size_bytes / gib)))
+    except OSError:
+        return None
+
+
+def _build_vm_xml(vm: VMCreate, disk_path: str) -> str:
+    return f"""
+    <domain type='kvm'>
+      <name>{vm.name}</name>
+      <memory unit='MiB'>{vm.memory_mb}</memory>
+      <currentMemory unit='MiB'>{vm.memory_mb}</currentMemory>
+      <vcpu>{vm.cpu_cores}</vcpu>
+      <os>
+        <type arch='x86_64'>hvm</type>
+      </os>
+      <devices>
+        <emulator>/usr/bin/qemu-system-x86_64</emulator>
+        <disk type='file' device='disk'>
+          <driver name='qemu' type='qcow2'/>
+          <source file='{disk_path}'/>
+          <target dev='vda' bus='virtio'/>
+        </disk>
+        <interface type='network'>
+          <source network='default'/>
+        </interface>
+        <graphics type='vnc' port='-1'/>
+      </devices>
+    </domain>
+    """.strip()
+
+
+def _create_default_disk(vm: VMCreate) -> VMDiskLocation:
+    os.makedirs(DEFAULT_VM_IMAGES_DIR, exist_ok=True)
+    disk_path = os.path.join(DEFAULT_VM_IMAGES_DIR, f"{vm.name}.qcow2")
+    if os.path.exists(disk_path):
+        raise HTTPException(status_code=400, detail=f"Диск '{os.path.basename(disk_path)}' уже существует")
+
+    try:
+        subprocess.run(
+            ["qemu-img", "create", "-f", "qcow2", disk_path, f"{vm.disk_gb}G"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Утилита qemu-img не найдена на хосте")
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=500, detail=f"Ошибка создания диска: {exc.stderr.strip() or exc.stdout.strip()}")
+
+    return VMDiskLocation(
+        disk_path=disk_path,
+        storage_pool=None,
+        storage_volume=os.path.basename(disk_path),
+        owns_disk=True,
+    )
+
+
+def _create_pool_volume(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
+    pool_name = (vm.storage_pool or "").strip()
+    if not pool_name:
+        return _create_default_disk(vm)
+
+    try:
+        pool = conn.storagePoolLookupByName(pool_name)  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=404, detail=f"Пул хранения '{pool_name}' не найден: {exc}")
+
+    try:
+        if pool.isActive() != 1:  # type: ignore[no-untyped-call]
+            raise HTTPException(status_code=400, detail=f"Пул хранения '{pool_name}' не запущен")
+        volume_name = f"{vm.name}.qcow2"
+        pool.storageVolLookupByName(volume_name)  # type: ignore[no-untyped-call]
+        raise HTTPException(status_code=400, detail=f"Том '{volume_name}' уже существует в пуле '{pool_name}'")
+    except HTTPException:
+        raise
+    except libvirt.libvirtError:
+        pass
+
+    capacity_bytes = vm.disk_gb * 1024 * 1024 * 1024
+    volume_xml = f"""
+    <volume>
+      <name>{vm.name}.qcow2</name>
+      <capacity unit='bytes'>{capacity_bytes}</capacity>
+      <allocation unit='bytes'>0</allocation>
+      <target>
+        <format type='qcow2'/>
+      </target>
+    </volume>
+    """.strip()
+
+    try:
+        volume = pool.createXML(volume_xml, 0)  # type: ignore[no-untyped-call]
+        pool.refresh(0)  # type: ignore[no-untyped-call]
+        disk_path = volume.path()  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=500, detail=f"Ошибка создания тома для ВМ: {exc}")
+
+    return VMDiskLocation(
+        disk_path=disk_path,
+        storage_pool=pool_name,
+        storage_volume=f"{vm.name}.qcow2",
+        owns_disk=True,
+    )
+
+
+def _use_existing_pool_volume(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
+    pool_name = (vm.storage_pool or "").strip()
+    volume_name = (vm.existing_volume or "").strip()
+
+    if not pool_name:
+        raise HTTPException(status_code=400, detail="Для использования существующего тома выберите пул хранения")
+    if not volume_name:
+        raise HTTPException(status_code=400, detail="Для использования существующего тома выберите том")
+
+    try:
+        pool = conn.storagePoolLookupByName(pool_name)  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=404, detail=f"Пул хранения '{pool_name}' не найден: {exc}")
+
+    try:
+        if pool.isActive() != 1:  # type: ignore[no-untyped-call]
+            raise HTTPException(status_code=400, detail=f"Пул хранения '{pool_name}' не запущен")
+        volume = pool.storageVolLookupByName(volume_name)  # type: ignore[no-untyped-call]
+        disk_path = volume.path()  # type: ignore[no-untyped-call]
+    except HTTPException:
+        raise
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=404, detail=f"Том '{volume_name}' не найден в пуле '{pool_name}': {exc}")
+
+    attached_disk_paths = _get_attached_disk_paths(conn)
+    normalized_disk_path = os.path.abspath(disk_path)
+    if normalized_disk_path in attached_disk_paths:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Том '{volume_name}' из пула '{pool_name}' уже подключен к другой виртуальной машине",
+        )
+
+    return VMDiskLocation(
+        disk_path=disk_path,
+        storage_pool=pool_name,
+        storage_volume=volume_name,
+        owns_disk=False,
+    )
+
+
+def _resolve_vm_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
+    if vm.disk_mode == "existing":
+        return _use_existing_pool_volume(conn, vm)
+    return _create_pool_volume(conn, vm)
+
+
+def _delete_disk_artifact(conn: libvirt.virConnect, disk: VMDiskLocation) -> None:  # type: ignore[name-defined]
+    if not disk.owns_disk:
+        return
+
+    try:
+        if disk.storage_pool:
+            pool = conn.storagePoolLookupByName(disk.storage_pool)  # type: ignore[no-untyped-call]
+            volume = pool.storageVolLookupByName(disk.storage_volume)  # type: ignore[no-untyped-call]
+            volume.delete(0)  # type: ignore[no-untyped-call]
+            if pool.isActive() == 1:  # type: ignore[no-untyped-call]
+                pool.refresh(0)  # type: ignore[no-untyped-call]
+            return
+    except Exception:
+        pass
+
+    try:
+        if disk.disk_path and os.path.exists(disk.disk_path):
+            os.remove(disk.disk_path)
+    except OSError:
+        pass
+
+
+@router.post("/vms", response_model=VMItem)
+async def create_vm(vm: VMCreate) -> VMItem:
+    conn = _get_libvirt_conn()
+
+    try:
+        existing = conn.lookupByName(vm.name)  # type: ignore[no-untyped-call]
+        if existing is not None:
+            raise HTTPException(status_code=400, detail=f"ВМ '{vm.name}' уже существует")
+    except HTTPException:
+        raise
+    except libvirt.libvirtError:
+        pass
+
+    disk = _resolve_vm_disk(conn, vm)
+    vm_xml = _build_vm_xml(vm, disk.disk_path)
+
+    disk_gb = vm.disk_gb if vm.disk_mode == "create" else _get_disk_size_gb(disk.disk_path)
+
+    try:
+        dom = conn.defineXML(vm_xml)  # type: ignore[no-untyped-call]
+        if dom is None:
+            _delete_disk_artifact(conn, disk)
+            raise HTTPException(status_code=500, detail="Не удалось создать ВМ через libvirt")
+        return VMItem(
+            id=vm.name,
+            name=vm.name,
+            status=_vm_status_from_domain(dom),
+            cpu_cores=vm.cpu_cores,
+            memory_mb=vm.memory_mb,
+            disk_gb=disk_gb,
+            cluster_id=None,
+            storage_pool=disk.storage_pool,
+            storage_volume=disk.storage_volume,
+            disk_path=disk.disk_path,
+        )
+    except HTTPException:
+        raise
+    except libvirt.libvirtError as exc:
+        _delete_disk_artifact(conn, disk)
+        raise HTTPException(status_code=500, detail=f"Ошибка libvirt: {exc}")
+
+
 @router.get("/vms", response_model=list[VMItem])
 async def list_vms() -> List[VMItem]:
-    """Вернуть список ВМ из libvirt.
-
-    Для простоты используем имя ВМ как её идентификатор (id).
-    """
     conn = _get_libvirt_conn()
 
     try:
@@ -116,8 +357,8 @@ async def list_vms() -> List[VMItem]:
 
     items: List[VMItem] = []
     vm_names = []
+    pool_paths = _get_storage_pool_paths(conn)
 
-    import xml.etree.ElementTree as ET
     for dom in domains:
         try:
             name = dom.name()  # type: ignore[no-untyped-call]
@@ -126,22 +367,30 @@ async def list_vms() -> List[VMItem]:
 
         vm_names.append(name)
         status = _vm_status_from_domain(dom)
-        # Попробуем получить ресурсы из XML
         try:
             xml = dom.XMLDesc()  # type: ignore[no-untyped-call]
             root = ET.fromstring(xml)
             cpu_cores = int(root.findtext('./vcpu') or 0) or None
             memory_kib = int(root.findtext('./memory') or 0) or None
             memory_mb = int(memory_kib / 1024) if memory_kib else None
+            disk_node = root.find("./devices/disk[@device='disk']/source")
+            disk_path = None
+            storage_volume = None
+            storage_pool = None
             disk_gb = None
-            disk = root.find("./devices/disk/source")
-            if disk is not None:
-                # Здесь можно добавить анализ размера файла, если нужно
-                pass
+            if disk_node is not None:
+                disk_path = disk_node.get('file') or disk_node.get('dev') or disk_node.get('name')
+                if disk_path:
+                    storage_volume = os.path.basename(disk_path)
+                    storage_pool = _resolve_storage_pool_by_path(disk_path, pool_paths)
+                    disk_gb = _get_disk_size_gb(disk_path)
         except Exception:
             cpu_cores = None
             memory_mb = None
             disk_gb = None
+            disk_path = None
+            storage_pool = None
+            storage_volume = None
 
         items.append(
             VMItem(
@@ -152,6 +401,9 @@ async def list_vms() -> List[VMItem]:
                 memory_mb=memory_mb,
                 disk_gb=disk_gb,
                 cluster_id=None,
+                storage_pool=storage_pool,
+                storage_volume=storage_volume,
+                disk_path=disk_path,
             )
         )
 
@@ -206,7 +458,6 @@ async def restart_vm(vm_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"ВМ '{vm_id}' не найдена")
 
     try:
-        # Попробуем мягкий рестарт, при ошибке можно будет использовать reset
         dom.reboot(0)  # type: ignore[no-untyped-call]
     except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
         raise HTTPException(status_code=500, detail=f"Ошибка перезапуска ВМ: {exc}")

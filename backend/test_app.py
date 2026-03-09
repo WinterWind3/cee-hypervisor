@@ -51,3 +51,9 @@ def test_vm_lifecycle():
 	# Перезапуск
 	resp_restart = client.post(f"/api/vms/{vm_id}/restart")
 	assert resp_restart.status_code in (200, 404, 500)
+
+
+def test_get_storage():
+	"""Проверка списка хранилищ (если libvirt доступен)."""
+	response = client.get("/api/storage")
+	assert response.status_code in (200, 500)
