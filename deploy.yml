@@ -124,6 +124,12 @@
         scope: global
       become_user: "{{ app_user }}"
 
+    - name: Allow git safe directory for root (needed when become=true)
+      community.general.git_config:
+        name: safe.directory
+        value: "{{ app_dir }}"
+        scope: global
+
     - name: Clone or update repository
       ansible.builtin.git:
         repo: "{{ app_repo }}"

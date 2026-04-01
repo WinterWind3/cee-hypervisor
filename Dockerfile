@@ -17,15 +17,19 @@ RUN npm run build
 FROM python:3.12-slim
 
 # System deps: libvirt-python + ovs-vsctl for vSwitch management
-# openvswitch-common (Debian/Ubuntu) provides the ovs-vsctl binary
-# without any daemon services — safe to install inside Docker.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libvirt-dev \
-    libvirt-clients \
-    pkg-config \
-    gcc \
-    python3-dev \
-    openvswitch-common \
+# policy-rc.d trick: block service start during openvswitch-switch postinst
+# (Docker has no systemd, so dpkg would fail without this)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libvirt-dev \
+        libvirt-clients \
+        pkg-config \
+        gcc \
+        python3-dev \
+    && printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
+    && chmod +x /usr/sbin/policy-rc.d \
+    && apt-get install -y --no-install-recommends openvswitch-switch \
+    && rm -f /usr/sbin/policy-rc.d \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
