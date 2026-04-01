@@ -26,6 +26,7 @@ RUN apt-get update \
         pkg-config \
         gcc \
         python3-dev \
+        iproute2 \
     && printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
     && chmod +x /usr/sbin/policy-rc.d \
     && apt-get install -y --no-install-recommends openvswitch-switch \
