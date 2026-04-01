@@ -16,13 +16,14 @@ RUN npm run build
 # ─────────────────────────────────────────────
 FROM python:3.12-slim
 
-# System deps for libvirt-python
+# System deps: libvirt-python + ovs-vsctl for vSwitch management
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libvirt-dev \
     libvirt-clients \
     pkg-config \
     gcc \
     python3-dev \
+    openvswitch-switch \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

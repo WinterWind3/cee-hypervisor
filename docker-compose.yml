@@ -11,6 +11,8 @@ services:
     volumes:
       # Mount host libvirt socket so the container can manage VMs on the host
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      # Mount host OVS control socket so ovs-vsctl commands reach host OVS
+      - /var/run/openvswitch:/var/run/openvswitch
       # Persist SQLite database
       - cee_data:/app/backend
     group_add:

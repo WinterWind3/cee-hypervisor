@@ -88,6 +88,16 @@ export const apiService = {
   getNetworks: () => api.get('/api/networks'),
   createNetwork: (data) => api.post('/api/networks', data),
 
+  // vSwitches (OVS)
+  getVSwitches: () => api.get('/api/vswitches'),
+  createVSwitch: (data) => api.post('/api/vswitches', data),
+  deleteVSwitch: (name) => api.delete(`/api/vswitches/${encodeURIComponent(name)}`),
+  setVSwitchUplink: (name, data) => api.put(`/api/vswitches/${encodeURIComponent(name)}/uplink`, data),
+  removeVSwitchUplink: (name) => api.delete(`/api/vswitches/${encodeURIComponent(name)}/uplink`),
+  getInterfaces: () => api.get('/api/vswitches/interfaces'),
+  createPortGroup: (switchName, data) => api.post(`/api/vswitches/${encodeURIComponent(switchName)}/portgroups`, data),
+  deletePortGroup: (switchName, pgName) => api.delete(`/api/vswitches/${encodeURIComponent(switchName)}/portgroups/${encodeURIComponent(pgName)}`),
+
   // Storage
   getStorage: () => api.get('/api/storage'),
   createStoragePool: (data) => api.post('/api/storage/pools', data),
