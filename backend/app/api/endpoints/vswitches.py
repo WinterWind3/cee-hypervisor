@@ -82,18 +82,24 @@ class UplinkUpdate(BaseModel):
 # ── OVS subprocess wrappers ────────────────────────────────────────────────────
 
 def _ovs(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        ["ovs-vsctl"] + list(args),
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["ovs-vsctl"] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="ovs-vsctl не найден в контейнере. Убедитесь что openvswitch-common установлен.",
+        )
     if check and result.returncode != 0:
         stderr = result.stderr.strip()
         if result.returncode == 127 or "not found" in stderr.lower():
             raise HTTPException(
                 status_code=503,
-                detail="ovs-vsctl не найден. Установите openvswitch-switch на хост.",
+                detail="ovs-vsctl не найден. Установите openvswitch-common на хост.",
             )
         raise HTTPException(
             status_code=500,
