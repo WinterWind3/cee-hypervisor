@@ -116,6 +116,7 @@
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
         mode: "0755"
+        recurse: true
 
     - name: Allow git safe directory for app user
       community.general.git_config:
