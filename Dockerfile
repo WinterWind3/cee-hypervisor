@@ -17,8 +17,8 @@ RUN npm run build
 FROM python:3.12-slim
 
 # System deps: libvirt-python + ovs-vsctl for vSwitch management
-# openvswitch-common provides ovs-vsctl without the OVS service daemons
-# (openvswitch-switch fails to install in Docker because its postinst tries to start services)
+# openvswitch-common (Debian/Ubuntu) provides the ovs-vsctl binary
+# without any daemon services — safe to install inside Docker.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libvirt-dev \
     libvirt-clients \
