@@ -122,6 +122,7 @@
         repo: "{{ app_repo }}"
         dest: "{{ app_dir }}"
         version: master
+        update: true
         force: true
       become_user: "{{ app_user }}"
     # ── Resolve libvirt GID and write .env ──────────────────────────────────────
@@ -137,6 +138,13 @@
         owner: "{{ app_user }}"
         mode: "0640"
     # ── Start application ─────────────────────────────────────────────────────
+    - name: Stop existing container before rebuild
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        state: absent
+      become_user: "{{ app_user }}"
+      ignore_errors: true
+
     - name: Build and start CEE Hypervisor
       community.docker.docker_compose_v2:
         project_src: "{{ app_dir }}"
