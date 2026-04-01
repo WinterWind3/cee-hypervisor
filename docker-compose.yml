@@ -1,0 +1,21 @@
+services:
+  cee-hypervisor:
+    build: .
+    container_name: cee-hypervisor
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - LIBVIRT_URI=qemu:///system
+    volumes:
+      # Mount host libvirt socket so the container can manage VMs on the host
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      # Persist SQLite database
+      - cee_data:/app/backend
+    group_add:
+      # Add libvirt group so the process can access the socket (group ID may vary)
+      - libvirt
+
+volumes:
+  cee_data:

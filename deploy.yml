@@ -1,0 +1,141 @@
+---
+# CEE Hypervisor — Ansible deployment playbook
+#
+# Usage:
+#   ansible-galaxy collection install -r requirements.yml
+#   ansible-playbook -i hosts.yml deploy.yml
+#
+# Requirements on the control machine:
+#   - Ansible 2.12+
+#   - community.docker collection (installed via requirements.yml above)
+#
+# Requirements on the target host:
+#   - Ubuntu 22.04 / Debian 12 (or compatible)
+#   - SSH access with sudo privileges
+#   - Internet access to reach GitHub and Docker Hub
+#
+# The playbook will:
+#   1. Install libvirt, QEMU/KVM, Docker, Git
+#   2. Clone the repository from GitHub
+#   3. Build the Docker image on the target host
+#   4. Start the container via docker compose
+#   5. Verify health at http://<host>:8080/api/health
+
+- name: Deploy CEE Hypervisor
+  hosts: hypervisor
+  become: true
+  vars:
+    app_repo: "https://github.com/cubasnik/cee-hypervisor.git"
+    app_dir: "/opt/cee-hypervisor"
+    app_port: 8080
+    app_user: "cee"
+
+  tasks:
+
+    # ── System packages ───────────────────────────────────────────────────────
+    - name: Install system dependencies
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - ca-certificates
+          - gnupg
+          - libvirt-daemon-system
+          - libvirt-clients
+          - qemu-kvm
+          - python3-libvirt
+        state: present
+        update_cache: true
+
+    - name: Enable and start libvirtd
+      ansible.builtin.service:
+        name: libvirtd
+        state: started
+        enabled: true
+
+    # ── Docker ────────────────────────────────────────────────────────────────
+    - name: Ensure /etc/apt/keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker GPG key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+        force: false
+
+    - name: Add Docker APT repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Install Docker and Compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Enable and start Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    # ── App user ──────────────────────────────────────────────────────────────
+    - name: Create app user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        groups:
+          - docker
+          - libvirt
+          - kvm
+        append: true
+        shell: /bin/bash
+        create_home: true
+
+    # ── Repository ────────────────────────────────────────────────────────────
+    - name: Ensure app directory exists and is owned by app user
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Clone or update repository
+      ansible.builtin.git:
+        repo: "{{ app_repo }}"
+        dest: "{{ app_dir }}"
+        version: master
+        force: true
+      become_user: "{{ app_user }}"
+
+    # ── Start application ─────────────────────────────────────────────────────
+    - name: Build and start CEE Hypervisor
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        build: always
+        state: present
+      become_user: "{{ app_user }}"
+
+    # ── Health check ──────────────────────────────────────────────────────────
+    - name: Wait for application to become ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ app_port }}/api/health"
+        status_code: 200
+      register: health
+      retries: 30
+      delay: 3
+      until: health.status == 200
+
+    - name: Print access URL
+      ansible.builtin.debug:
+        msg: "CEE Hypervisor is running at http://{{ ansible_host }}:{{ app_port }}"
