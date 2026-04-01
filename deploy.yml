@@ -153,11 +153,12 @@
         mode: "0640"
     # ── Start application ─────────────────────────────────────────────────────
     - name: Stop existing container before rebuild
-      community.docker.docker_compose_v2:
-        project_src: "{{ app_dir }}"
-        state: absent
+      ansible.builtin.command:
+        cmd: docker compose down
+        chdir: "{{ app_dir }}"
       become_user: "{{ app_user }}"
       ignore_errors: true
+      changed_when: false
 
     - name: Build and start CEE Hypervisor
       community.docker.docker_compose_v2:
