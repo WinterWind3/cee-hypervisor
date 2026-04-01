@@ -117,6 +117,13 @@
         group: "{{ app_user }}"
         mode: "0755"
 
+    - name: Allow git safe directory for app user
+      community.general.git_config:
+        name: safe.directory
+        value: "{{ app_dir }}"
+        scope: global
+      become_user: "{{ app_user }}"
+
     - name: Clone or update repository
       ansible.builtin.git:
         repo: "{{ app_repo }}"
@@ -149,6 +156,7 @@
       community.docker.docker_compose_v2:
         project_src: "{{ app_dir }}"
         build: always
+        nocache: true
         state: present
       become_user: "{{ app_user }}"
 
