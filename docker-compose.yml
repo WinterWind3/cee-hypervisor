@@ -12,13 +12,16 @@ services:
     environment:
       - PORT=8080
       - LIBVIRT_URI=qemu:///system
+      - DATABASE_URL=sqlite:////app/data/cee.db
+      - PORTGROUPS_FILE=/app/data/portgroups.json
     volumes:
       # Mount host libvirt socket so the container can manage VMs on the host
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
       # Mount host OVS control socket so ovs-vsctl commands reach host OVS
       - /var/run/openvswitch:/var/run/openvswitch
-      # Persist SQLite database
-      - cee_data:/app/backend
+      # Persist only data files (SQLite DB, portgroups.json, backups)
+      # DO NOT mount /app/backend — that would override the Python code from the image
+      - cee_data:/app/data
     group_add:
       # Numeric GID of the libvirt group on the host — resolved by Ansible and written to .env
       - "${LIBVIRT_GID}"

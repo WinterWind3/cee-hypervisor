@@ -42,6 +42,9 @@ COPY --from=frontend-builder /app/frontend/build ./frontend/build
 
 WORKDIR /app/backend
 
+# Create data directory for persistent files (DB, portgroups.json)
+RUN mkdir -p /app/data
+
 ENV PORT=8080
 ENV LIBVIRT_URI=qemu:///system
 
