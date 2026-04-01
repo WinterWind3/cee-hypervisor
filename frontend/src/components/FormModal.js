@@ -18,7 +18,7 @@ const FormModal = ({
   }
 
   return (
-    <div className="modal-overlay" onClick={isSubmitting ? undefined : onClose}>
+    <div className="modal-overlay">
       <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <h3 className="modal-title">{title}</h3>
