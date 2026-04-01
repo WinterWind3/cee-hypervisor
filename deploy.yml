@@ -117,7 +117,18 @@
         version: master
         force: true
       become_user: "{{ app_user }}"
+    # ── Resolve libvirt GID and write .env ──────────────────────────────────────
+    - name: Get libvirt group GID
+      ansible.builtin.command: getent group libvirt
+      register: libvirt_group_entry
+      changed_when: false
 
+    - name: Write .env with LIBVIRT_GID
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        content: "LIBVIRT_GID={{ libvirt_group_entry.stdout.split(':')[2] }}\n"
+        owner: "{{ app_user }}"
+        mode: "0640"
     # ── Start application ─────────────────────────────────────────────────────
     - name: Build and start CEE Hypervisor
       community.docker.docker_compose_v2:

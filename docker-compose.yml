@@ -14,8 +14,8 @@ services:
       # Persist SQLite database
       - cee_data:/app/backend
     group_add:
-      # Add libvirt group so the process can access the socket (group ID may vary)
-      - libvirt
+      # Numeric GID of the libvirt group on the host — resolved by Ansible and written to .env
+      - "${LIBVIRT_GID}"
 
 volumes:
   cee_data:
