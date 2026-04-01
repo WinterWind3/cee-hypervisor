@@ -163,7 +163,6 @@
       community.docker.docker_compose_v2:
         project_src: "{{ app_dir }}"
         build: always
-        nocache: true
         state: present
       become_user: "{{ app_user }}"
 
