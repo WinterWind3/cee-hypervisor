@@ -25,7 +25,7 @@
   hosts: hypervisor
   become: true
   vars:
-    app_repo: "https://github.com/cubasnik/cee-hypervisor.git"
+    app_repo: "https://github.com/WinterWind3/cee-hypervisor.git"
     app_dir: "/opt/cee-hypervisor"
     app_port: 8080
     app_user: "cee"
