@@ -94,19 +94,46 @@ const VirtualMachines = () => {
     try {
       setLoading(true);
       setError(null);
-      const [vmResponse, storageResponse, imagesResponse, networksResponse, vSwitchesResponse] = await Promise.all([
+      const [vmResult, storageResult, imagesResult, networksResult, vSwitchesResult] = await Promise.allSettled([
         apiService.getVMs(),
         apiService.getStorage(),
         apiService.getImages(),
         apiService.getNetworks(),
         apiService.getVSwitches(),
       ]);
-      setVms(vmResponse.data || []);
-      setStoragePools(Array.isArray(storageResponse.data?.pools) ? storageResponse.data.pools : []);
-      setStorageVolumes(Array.isArray(storageResponse.data?.volumes) ? storageResponse.data.volumes : []);
-      setImages(Array.isArray(imagesResponse.data) ? imagesResponse.data : []);
-      setNetworks(Array.isArray(networksResponse.data) ? networksResponse.data : []);
-      setVSwitches(Array.isArray(vSwitchesResponse.data) ? vSwitchesResponse.data : []);
+
+      if (vmResult.status === 'fulfilled') {
+        setVms(vmResult.value.data || []);
+      } else {
+        throw vmResult.reason;
+      }
+
+      if (storageResult.status === 'fulfilled') {
+        setStoragePools(Array.isArray(storageResult.value.data?.pools) ? storageResult.value.data.pools : []);
+        setStorageVolumes(Array.isArray(storageResult.value.data?.volumes) ? storageResult.value.data.volumes : []);
+      } else {
+        setStoragePools([]);
+        setStorageVolumes([]);
+      }
+
+      if (imagesResult.status === 'fulfilled') {
+        setImages(Array.isArray(imagesResult.value.data) ? imagesResult.value.data : []);
+      } else {
+        setImages([]);
+      }
+
+      if (networksResult.status === 'fulfilled') {
+        setNetworks(Array.isArray(networksResult.value.data) ? networksResult.value.data : []);
+      } else {
+        setNetworks([]);
+      }
+
+      if (vSwitchesResult.status === 'fulfilled') {
+        setVSwitches(Array.isArray(vSwitchesResult.value.data) ? vSwitchesResult.value.data : []);
+      } else {
+        setVSwitches([]);
+      }
+
       if (showMessage) {
         showUpdateMessage('Данные обновлены');
       }
@@ -245,7 +272,7 @@ const VirtualMachines = () => {
   }, [newVm.storage_pool, storageVolumes, usedStorageVolumeKeys]);
 
   const availableBootImages = useMemo(
-    () => images.filter((image) => ['qcow2', 'img', 'vmdk', 'vdi'].includes((image.type || '').toLowerCase())),
+    () => images.filter((image) => ['iso', 'qcow2', 'img', 'vmdk', 'vdi'].includes((image.type || '').toLowerCase())),
     [images]
   );
 
@@ -504,13 +531,13 @@ const VirtualMachines = () => {
   const handleDelete = (vm) => {
     openDialog({
       title: `Удалить ВМ ${vm.name}?`,
-      message: 'Виртуальная машина будет удалена из libvirt. Диск можно удалить отдельно в разделе Хранилище.',
+      message: 'Виртуальная машина и ее системный диск будут удалены.',
       variant: 'danger',
       confirmLabel: 'Удалить',
       cancelLabel: 'Отмена',
       onConfirm: async () => {
         try {
-          await apiService.deleteVMWithOptions(vm.name, { delete_disk: false });
+          await apiService.deleteVMWithOptions(vm.name, { delete_disk: true });
           closeDialog();
           await loadVMs(false);
           showUpdateMessage(`ВМ ${vm.name} удалена`);
@@ -619,7 +646,7 @@ const VirtualMachines = () => {
               ))}
             </select>
             {isFieldInvalid('boot_source_image') && <p className="modal-error">{createErrors.boot_source_image}</p>}
-            <p className="modal-hint">Будет создана отдельная копия образа в /var/lib/libvirt/images под именем ВМ.</p>
+            <p className="modal-hint">Для qcow2/img/vmdk/vdi будет создана копия диска. Для ISO образ подключится как CD-ROM, а системный диск создастся отдельно.</p>
           </div>
         )}
         {newVm.disk_source_mode !== 'image' && (

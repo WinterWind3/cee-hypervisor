@@ -16,6 +16,7 @@ router = APIRouter()
 DEFAULT_VM_IMAGES_DIR = "/var/lib/libvirt/images"
 PORTGROUPS_FILE = os.getenv("PORTGROUPS_FILE", "/app/backend/portgroups.json")
 IMAGE_BACKED_EXTENSIONS = {".qcow2", ".img", ".vmdk", ".vdi"}
+ISO_EXTENSION = ".iso"
 DISK_FORMAT_BY_EXTENSION = {
     ".qcow2": "qcow2",
     ".img": "raw",
@@ -342,8 +343,19 @@ def _get_disk_size_gb(disk_path: str | None) -> int | None:
         return None
 
 
-def _build_vm_xml(vm: VMCreate, disk_path: str, disk_format: str) -> str:
+def _build_vm_xml(vm: VMCreate, disk_path: str, disk_format: str, cdrom_iso_path: str | None = None) -> str:
     interface_xml = _build_interface_xml(vm)
+        cdrom_xml = ""
+        if cdrom_iso_path:
+                cdrom_xml = f"""
+                <disk type='file' device='cdrom'>
+                    <driver name='qemu' type='raw'/>
+                    <source file='{cdrom_iso_path}'/>
+                    <target dev='sda' bus='sata'/>
+                    <readonly/>
+                </disk>
+                """.strip()
+
     return f"""
     <domain type='kvm'>
       <name>{vm.name}</name>
@@ -360,6 +372,7 @@ def _build_vm_xml(vm: VMCreate, disk_path: str, disk_format: str) -> str:
           <source file='{disk_path}'/>
           <target dev='vda' bus='virtio'/>
         </disk>
+                {cdrom_xml}
                 {interface_xml}
                 <graphics type='vnc' autoport='yes' listen='0.0.0.0'/>
       </devices>
@@ -519,9 +532,37 @@ def _create_disk_from_uploaded_image(conn: libvirt.virConnect, vm: VMCreate) -> 
     )
 
 
+def _get_uploaded_image_path(image_name: str) -> str:
+    source_path = os.path.join(get_project_images_dir(), image_name)
+    if not os.path.isfile(source_path):
+        raise HTTPException(status_code=404, detail=f"Образ '{image_name}' не найден в разделе Образы")
+    return source_path
+
+
+def _resolve_boot_iso(vm: VMCreate) -> str | None:
+    image_name = (vm.boot_source_image or "").strip()
+    if not image_name:
+        return None
+
+    source_path = _get_uploaded_image_path(image_name)
+    source_ext = os.path.splitext(image_name)[1].lower()
+    if source_ext != ISO_EXTENSION:
+        return None
+
+    return source_path
+
+
 def _resolve_vm_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
-    if (vm.boot_source_image or "").strip():
+    image_name = (vm.boot_source_image or "").strip()
+    if image_name:
+        source_path = _get_uploaded_image_path(image_name)
+        source_ext = os.path.splitext(source_path)[1].lower()
+        if source_ext == ISO_EXTENSION:
+            if vm.disk_mode == "existing":
+                return _use_existing_pool_volume(conn, vm)
+            return _create_pool_volume(conn, vm)
         return _create_disk_from_uploaded_image(conn, vm)
+
     if vm.disk_mode == "existing":
         return _use_existing_pool_volume(conn, vm)
     return _create_pool_volume(conn, vm)
@@ -608,7 +649,8 @@ async def create_vm(vm: VMCreate) -> VMItem:
         pass
 
     disk = _resolve_vm_disk(conn, vm)
-    vm_xml = _build_vm_xml(vm, disk.disk_path, disk.disk_format)
+    boot_iso_path = _resolve_boot_iso(vm)
+    vm_xml = _build_vm_xml(vm, disk.disk_path, disk.disk_format, boot_iso_path)
 
     disk_gb = vm.disk_gb if vm.disk_mode == "create" else _get_disk_size_gb(disk.disk_path)
 

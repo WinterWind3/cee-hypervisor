@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 import xml.etree.ElementTree as ET
 
@@ -108,21 +109,35 @@ async def vm_console(name: str):
     except libvirt.libvirtError:  # type: ignore[attr-defined]
         raise HTTPException(status_code=404, detail=f"ВМ '{name}' не найдена в libvirt")
 
-    xml_desc = dom.XMLDesc()  # type: ignore[no-untyped-call]
-    root = ET.fromstring(xml_desc)
-    gfx = root.find("./devices/graphics[@type='vnc']")
-    if gfx is None:
-        raise HTTPException(status_code=400, detail="Для ВМ не настроена VNC-консоль")
+    def _read_vnc_port() -> int | None:
+        xml_desc = dom.XMLDesc()  # type: ignore[no-untyped-call]
+        root = ET.fromstring(xml_desc)
+        gfx = root.find("./devices/graphics[@type='vnc']")
+        if gfx is None:
+            raise HTTPException(status_code=400, detail="Для ВМ не настроена VNC-консоль")
 
-    port = gfx.get("port")
-    if port is None or port == "-1":
-        # -1 означает autoport: порт выбирается динамически, сейчас считаем это ошибкой конфигурации
-        raise HTTPException(status_code=400, detail="VNC-порт не задан или работает в autoport-режиме")
+        port_raw = gfx.get("port")
+        if port_raw is None:
+            return None
+        try:
+            return int(port_raw)
+        except ValueError:
+            raise HTTPException(status_code=500, detail="Некорректный VNC-порт в конфигурации ВМ")
 
-    try:
-        vnc_port = int(port)
-    except ValueError:
-        raise HTTPException(status_code=500, detail="Некорректный VNC-порт в конфигурации ВМ")
+    vnc_port = _read_vnc_port()
+    if vnc_port in {None, -1}:
+        if dom.isActive() != 1:  # type: ignore[no-untyped-call]
+            raise HTTPException(status_code=409, detail="ВМ выключена. Запустите ВМ, чтобы открыть консоль.")
+
+        # Для autoport libvirt может назначить порт не мгновенно после старта ВМ.
+        for _ in range(10):
+            time.sleep(0.2)
+            vnc_port = _read_vnc_port()
+            if vnc_port not in {None, -1}:
+                break
+
+    if vnc_port in {None, -1}:
+        raise HTTPException(status_code=500, detail="Не удалось определить VNC-порт для запущенной ВМ")
 
     novnc_host = os.getenv("NOVNC_HOST", "localhost")
     novnc_port = int(os.getenv("NOVNC_PORT", "6080"))
