@@ -50,29 +50,6 @@ def _get_libvirt_conn() -> libvirt.virConnect:  # type: ignore[name-defined]
 
 @router.get("/servers", response_model=list[ServerItem])
 async def list_servers() -> list[ServerItem]:
-  conn = _get_libvirt_conn()
-
-  try:
-    info = conn.getInfo()  # type: ignore[no-untyped-call]
-    hostname = conn.getHostname()  # type: ignore[no-untyped-call]
-    libvirt_uri = conn.getURI()  # type: ignore[no-untyped-call]
-  except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
-    raise HTTPException(status_code=500, detail=f"Ошибка получения данных сервера: {exc}")
-
-  memory_total = int(info[1]) if len(info) > 1 else 0
-  cpu_cores = int(info[2]) if len(info) > 2 else 0
-  name = hostname.split(".")[0] if hostname else "local-host"
-
-  libvirt_server = ServerItem(
-    id=name,
-    name=name,
-    hostname=hostname or libvirt_uri,
-    status="online",
-    cpu_cores=cpu_cores,
-    memory_total=memory_total,
-    cluster="local",
-  )
-
   custom_servers_data = load_custom_servers()
   custom_servers = []
   for cs in custom_servers_data:
@@ -88,7 +65,7 @@ async def list_servers() -> list[ServerItem]:
       )
     )
 
-  return [libvirt_server] + custom_servers
+  return custom_servers
 
 @router.post("/servers", response_model=ServerItem)
 async def create_server(server: ServerCreate) -> ServerItem:

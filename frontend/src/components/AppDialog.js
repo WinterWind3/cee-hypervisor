@@ -1,5 +1,20 @@
 import React, { useEffect } from 'react';
 
+const overlayStyle = {
+  overflowY: 'auto',
+};
+
+const panelStyle = {
+  maxHeight: 'calc(100vh - 2.5rem)',
+  display: 'flex',
+  flexDirection: 'column',
+};
+
+const bodyStyle = {
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
 const VARIANT_STYLES = {
   info: {
     badge: 'bg-sky-500/10 text-sky-200 border-sky-500/20',
@@ -68,8 +83,8 @@ const AppDialog = ({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className={`modal-panel ${panelClassName}`.trim()} onClick={(event) => event.stopPropagation()}>
+    <div className="modal-overlay" style={overlayStyle} onClick={onClose}>
+      <div className={`modal-panel ${panelClassName}`.trim()} style={panelStyle} onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.badge}`}>
             {styles.toneLabel}
@@ -77,7 +92,7 @@ const AppDialog = ({
           <h3 className="modal-title mt-3">{title}</h3>
           {message ? <div className="modal-subtitle whitespace-pre-line">{message}</div> : null}
         </div>
-        {content ? <div className={`modal-body ${contentClassName}`.trim()}>{content}</div> : null}
+        {content ? <div className={`modal-body ${contentClassName}`.trim()} style={bodyStyle}>{content}</div> : null}
         <div className="modal-actions">
           {cancelLabel && (
             <button className="btn page-toolbar-button inline-flex min-h-[42px] items-center justify-center" onClick={onClose}>{cancelLabel}</button>

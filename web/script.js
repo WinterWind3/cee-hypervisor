@@ -1109,6 +1109,18 @@ function toggleSettingsModal() {
 function openModal(id) {
     const modal = document.getElementById(id);
     if (modal) {
+        modal.style.alignItems = 'flex-start';
+        modal.style.overflowY = 'auto';
+        modal.style.paddingTop = '1rem';
+        modal.style.paddingBottom = '1rem';
+
+        const panel = modal.firstElementChild;
+        if (panel) {
+            panel.style.maxHeight = 'calc(100vh - 2rem)';
+            panel.style.overflowY = 'auto';
+            panel.style.margin = '0 auto';
+        }
+
         modal.classList.remove('hidden');
         modal.classList.add('flex');
     }

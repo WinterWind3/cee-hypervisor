@@ -1,5 +1,20 @@
 import React from 'react';
 
+const overlayStyle = {
+  overflowY: 'auto',
+};
+
+const panelStyle = {
+  maxHeight: 'calc(100vh - 2.5rem)',
+  display: 'flex',
+  flexDirection: 'column',
+};
+
+const bodyStyle = {
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
 const FormModal = ({
   isOpen,
   title,
@@ -18,13 +33,13 @@ const FormModal = ({
   }
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-overlay" style={overlayStyle}>
+      <div className="modal-panel" style={panelStyle} onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <h3 className="modal-title">{title}</h3>
           {subtitle && <p className="modal-subtitle">{subtitle}</p>}
         </div>
-        <div className="modal-body">
+        <div className="modal-body" style={bodyStyle}>
           <fieldset disabled={isSubmitting} className={`space-y-4 ${isSubmitting ? 'opacity-80' : ''}`}>
             {children}
           </fieldset>

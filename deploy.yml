@@ -43,6 +43,7 @@
           - libvirt-daemon-system
           - libvirt-clients
           - qemu-kvm
+          - qemu-utils
           - python3-libvirt
           - openvswitch-switch
         state: present

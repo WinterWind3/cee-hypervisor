@@ -1,5 +1,4 @@
 import os
-import subprocess
 import xml.etree.ElementTree as ET
 from typing import List, Literal
 
@@ -42,6 +41,20 @@ class VMDiskLocation(BaseModel):
     owns_disk: bool = True
 
 
+def _build_volume_xml(volume_name: str, disk_gb: int) -> str:
+        capacity_bytes = disk_gb * 1024 * 1024 * 1024
+        return f"""
+        <volume>
+            <name>{volume_name}</name>
+            <capacity unit='bytes'>{capacity_bytes}</capacity>
+            <allocation unit='bytes'>0</allocation>
+            <target>
+                <format type='qcow2'/>
+            </target>
+        </volume>
+        """.strip()
+
+
 def _get_libvirt_conn() -> libvirt.virConnect:  # type: ignore[name-defined]
     uri = os.getenv("LIBVIRT_URI", "qemu:///system")
     try:
@@ -77,6 +90,81 @@ def _get_storage_pool_paths(conn: libvirt.virConnect) -> dict[str, str]:  # type
         except Exception:
             continue
     return pool_paths
+
+
+def _find_storage_pool_by_path(conn: libvirt.virConnect, target_path: str) -> tuple[libvirt.virStoragePool, str] | tuple[None, None]:  # type: ignore[name-defined]
+    normalized_target_path = os.path.abspath(target_path)
+    try:
+        pools = conn.listAllStoragePools()  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError:
+        return None, None
+
+    for pool in pools:
+        try:
+            xml_root = ET.fromstring(pool.XMLDesc(0))  # type: ignore[no-untyped-call]
+            pool_name = pool.name()  # type: ignore[no-untyped-call]
+            pool_path = xml_root.findtext("./target/path")
+            if pool_name and pool_path and os.path.abspath(pool_path) == normalized_target_path:
+                return pool, pool_name
+        except Exception:
+            continue
+
+    return None, None
+
+
+def _ensure_default_images_pool(conn: libvirt.virConnect) -> tuple[libvirt.virStoragePool, str]:  # type: ignore[name-defined]
+    existing_pool, existing_pool_name = _find_storage_pool_by_path(conn, DEFAULT_VM_IMAGES_DIR)
+    if existing_pool is not None and existing_pool_name is not None:
+        try:
+            if existing_pool.isActive() != 1:  # type: ignore[no-untyped-call]
+                existing_pool.create(0)  # type: ignore[no-untyped-call]
+                existing_pool.refresh(0)  # type: ignore[no-untyped-call]
+        except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+            raise HTTPException(status_code=500, detail=f"Не удалось запустить пул хранения '{existing_pool_name}': {exc}")
+        return existing_pool, existing_pool_name
+
+    os.makedirs(DEFAULT_VM_IMAGES_DIR, exist_ok=True)
+
+    base_pool_name = "cee-default-images"
+    pool_name = base_pool_name
+    suffix = 2
+    while True:
+        try:
+            pool = conn.storagePoolLookupByName(pool_name)  # type: ignore[no-untyped-call]
+            xml_root = ET.fromstring(pool.XMLDesc(0))  # type: ignore[no-untyped-call]
+            pool_path = xml_root.findtext("./target/path")
+            if pool_path and os.path.abspath(pool_path) == os.path.abspath(DEFAULT_VM_IMAGES_DIR):
+                if pool.isActive() != 1:  # type: ignore[no-untyped-call]
+                    pool.create(0)  # type: ignore[no-untyped-call]
+                    pool.refresh(0)  # type: ignore[no-untyped-call]
+                return pool, pool_name
+            pool_name = f"{base_pool_name}-{suffix}"
+            suffix += 1
+        except libvirt.libvirtError:
+            break
+
+    pool_xml = f"""
+    <pool type='dir'>
+      <name>{pool_name}</name>
+      <target>
+        <path>{DEFAULT_VM_IMAGES_DIR}</path>
+      </target>
+    </pool>
+    """.strip()
+
+    try:
+        pool = conn.storagePoolDefineXML(pool_xml, 0)  # type: ignore[no-untyped-call]
+        if pool is None:
+            raise HTTPException(status_code=500, detail="Не удалось определить пул хранения для системного каталога")
+        pool.setAutostart(1)  # type: ignore[no-untyped-call]
+        pool.build(0)  # type: ignore[no-untyped-call]
+        pool.create(0)  # type: ignore[no-untyped-call]
+        pool.refresh(0)  # type: ignore[no-untyped-call]
+        return pool, pool_name
+    except HTTPException:
+        raise
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=500, detail=f"Не удалось подготовить системный пул хранения '{DEFAULT_VM_IMAGES_DIR}': {exc}")
 
 
 def _get_attached_disk_paths(conn: libvirt.virConnect) -> set[str]:  # type: ignore[name-defined]
@@ -162,28 +250,24 @@ def _build_vm_xml(vm: VMCreate, disk_path: str) -> str:
     """.strip()
 
 
-def _create_default_disk(vm: VMCreate) -> VMDiskLocation:
-    os.makedirs(DEFAULT_VM_IMAGES_DIR, exist_ok=True)
-    disk_path = os.path.join(DEFAULT_VM_IMAGES_DIR, f"{vm.name}.qcow2")
+def _create_default_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
+    volume_name = f"{vm.name}.qcow2"
+    disk_path = os.path.join(DEFAULT_VM_IMAGES_DIR, volume_name)
     if os.path.exists(disk_path):
         raise HTTPException(status_code=400, detail=f"Диск '{os.path.basename(disk_path)}' уже существует")
 
+    pool, pool_name = _ensure_default_images_pool(conn)
+
     try:
-        subprocess.run(
-            ["qemu-img", "create", "-f", "qcow2", disk_path, f"{vm.disk_gb}G"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Утилита qemu-img не найдена на хосте")
-    except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=500, detail=f"Ошибка создания диска: {exc.stderr.strip() or exc.stdout.strip()}")
+        volume = pool.createXML(_build_volume_xml(volume_name, vm.disk_gb), 0)  # type: ignore[no-untyped-call]
+        pool.refresh(0)  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=500, detail=f"Ошибка создания системного диска для ВМ: {exc}")
 
     return VMDiskLocation(
-        disk_path=disk_path,
-        storage_pool=None,
-        storage_volume=os.path.basename(disk_path),
+        disk_path=volume.path(),  # type: ignore[no-untyped-call]
+        storage_pool=pool_name,
+        storage_volume=volume_name,
         owns_disk=True,
     )
 
@@ -191,7 +275,7 @@ def _create_default_disk(vm: VMCreate) -> VMDiskLocation:
 def _create_pool_volume(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
     pool_name = (vm.storage_pool or "").strip()
     if not pool_name:
-        return _create_default_disk(vm)
+        return _create_default_disk(conn, vm)
 
     try:
         pool = conn.storagePoolLookupByName(pool_name)  # type: ignore[no-untyped-call]
@@ -209,17 +293,7 @@ def _create_pool_volume(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocatio
     except libvirt.libvirtError:
         pass
 
-    capacity_bytes = vm.disk_gb * 1024 * 1024 * 1024
-    volume_xml = f"""
-    <volume>
-      <name>{vm.name}.qcow2</name>
-      <capacity unit='bytes'>{capacity_bytes}</capacity>
-      <allocation unit='bytes'>0</allocation>
-      <target>
-        <format type='qcow2'/>
-      </target>
-    </volume>
-    """.strip()
+    volume_xml = _build_volume_xml(f"{vm.name}.qcow2", vm.disk_gb)
 
     try:
         volume = pool.createXML(volume_xml, 0)  # type: ignore[no-untyped-call]
