@@ -382,11 +382,16 @@ def _build_vm_xml(vm: VMCreate, disk_path: str, disk_format: str, cdrom_iso_path
 
 def _create_default_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
     volume_name = f"{vm.name}.qcow2"
-    disk_path = os.path.join(DEFAULT_VM_IMAGES_DIR, volume_name)
-    if os.path.exists(disk_path):
-        raise HTTPException(status_code=400, detail=f"Диск '{os.path.basename(disk_path)}' уже существует")
 
     pool, pool_name = _ensure_default_images_pool(conn)
+
+    # Delete orphan volume if it already exists in the pool (e.g. leftover from a previous VM)
+    try:
+        existing_vol = pool.storageVolLookupByName(volume_name)  # type: ignore[no-untyped-call]
+        existing_vol.delete(0)  # type: ignore[no-untyped-call]
+        pool.refresh(0)  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError:  # type: ignore[attr-defined]
+        pass  # volume does not exist — that's fine
 
     try:
         volume = pool.createXML(_build_volume_xml(volume_name, vm.disk_gb), 0)  # type: ignore[no-untyped-call]
