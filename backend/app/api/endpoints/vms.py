@@ -549,12 +549,23 @@ def _resolve_boot_iso(vm: VMCreate) -> str | None:
     if not image_name:
         return None
 
-    source_path = _get_uploaded_image_path(image_name)
     source_ext = os.path.splitext(image_name)[1].lower()
     if source_ext != ISO_EXTENSION:
         return None
 
-    return source_path
+    source_path = _get_uploaded_image_path(image_name)
+
+    # libvirt runs on the host — it cannot access container-internal paths.
+    # Copy the ISO into the libvirt images directory so the host daemon can read it.
+    os.makedirs(DEFAULT_VM_IMAGES_DIR, exist_ok=True)
+    target_path = os.path.join(DEFAULT_VM_IMAGES_DIR, image_name)
+    if not os.path.exists(target_path):
+        try:
+            shutil.copy2(source_path, target_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Не удалось скопировать ISO '{image_name}' в каталог libvirt: {exc}")
+
+    return target_path
 
 
 def _resolve_vm_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]

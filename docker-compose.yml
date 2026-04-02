@@ -19,6 +19,9 @@ services:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
       # Mount host OVS control socket so ovs-vsctl commands reach host OVS
       - /var/run/openvswitch:/var/run/openvswitch
+      # Mount host libvirt images directory so files written here (disk images, ISOs)
+      # are visible to the host libvirt daemon at the same path
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
       # Persist only data files (SQLite DB, portgroups.json, backups)
       # DO NOT mount /app/backend — that would override the Python code from the image
       - cee_data:/app/data
