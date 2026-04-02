@@ -1,4 +1,7 @@
 import os
+import json
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 from typing import List, Literal
 
@@ -6,9 +9,19 @@ import libvirt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.api.endpoints.images import get_project_images_dir
+
 
 router = APIRouter()
 DEFAULT_VM_IMAGES_DIR = "/var/lib/libvirt/images"
+PORTGROUPS_FILE = os.getenv("PORTGROUPS_FILE", "/app/backend/portgroups.json")
+IMAGE_BACKED_EXTENSIONS = {".qcow2", ".img", ".vmdk", ".vdi"}
+DISK_FORMAT_BY_EXTENSION = {
+    ".qcow2": "qcow2",
+    ".img": "raw",
+    ".vmdk": "vmdk",
+    ".vdi": "vdi",
+}
 
 
 class VMItem(BaseModel):
@@ -22,6 +35,11 @@ class VMItem(BaseModel):
     storage_pool: str | None = None
     storage_volume: str | None = None
     disk_path: str | None = None
+    disk_format: str | None = None
+    network_source_type: str | None = None
+    network_name: str | None = None
+    vswitch_name: str | None = None
+    vswitch_portgroup: str | None = None
 
 
 class VMCreate(BaseModel):
@@ -32,6 +50,11 @@ class VMCreate(BaseModel):
     disk_mode: Literal["create", "existing"] = "create"
     storage_pool: str | None = None
     existing_volume: str | None = None
+    boot_source_image: str | None = None
+    network_source_type: Literal["libvirt", "vswitch"] = "libvirt"
+    network_name: str | None = "default"
+    vswitch_name: str | None = None
+    vswitch_portgroup: str | None = None
 
 
 class VMDiskLocation(BaseModel):
@@ -39,20 +62,115 @@ class VMDiskLocation(BaseModel):
     storage_pool: str | None
     storage_volume: str
     owns_disk: bool = True
+    disk_format: str = "qcow2"
 
 
 def _build_volume_xml(volume_name: str, disk_gb: int) -> str:
-        capacity_bytes = disk_gb * 1024 * 1024 * 1024
-        return f"""
-        <volume>
-            <name>{volume_name}</name>
-            <capacity unit='bytes'>{capacity_bytes}</capacity>
-            <allocation unit='bytes'>0</allocation>
-            <target>
-                <format type='qcow2'/>
-            </target>
-        </volume>
-        """.strip()
+    capacity_bytes = disk_gb * 1024 * 1024 * 1024
+    return f"""
+    <volume>
+      <name>{volume_name}</name>
+      <capacity unit='bytes'>{capacity_bytes}</capacity>
+      <allocation unit='bytes'>0</allocation>
+      <target>
+        <format type='qcow2'/>
+      </target>
+    </volume>
+    """.strip()
+
+
+def _detect_disk_format(disk_path: str) -> str:
+    ext = os.path.splitext(disk_path)[1].lower()
+    return DISK_FORMAT_BY_EXTENSION.get(ext, "qcow2")
+
+
+def _load_portgroups() -> dict[str, list[dict]]:
+    if not os.path.exists(PORTGROUPS_FILE):
+        return {}
+    try:
+        with open(PORTGROUPS_FILE, "r", encoding="utf-8") as file_obj:
+            data = json.load(file_obj)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _ovs_bridge_exists(bridge_name: str) -> bool:
+    result = subprocess.run(
+        ["ovs-vsctl", "br-exists", bridge_name],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _parse_trunk_vlan_ids(vlan_trunk: str) -> list[int]:
+    vlan_ids: list[int] = []
+    for segment in (item.strip() for item in vlan_trunk.split(",") if item.strip()):
+        if "-" in segment:
+            start_raw, end_raw = segment.split("-", 1)
+            start = int(start_raw)
+            end = int(end_raw)
+            if start > end:
+                start, end = end, start
+            vlan_ids.extend(range(start, end + 1))
+        else:
+            vlan_ids.append(int(segment))
+    # Keep order stable and remove duplicates.
+    return list(dict.fromkeys(vlan_ids))
+
+
+def _build_interface_xml(vm: VMCreate) -> str:
+    if vm.network_source_type == "vswitch":
+        switch_name = (vm.vswitch_name or "").strip()
+        if not switch_name:
+            raise HTTPException(status_code=400, detail="Для подключения к vSwitch укажите имя коммутатора")
+        if not _ovs_bridge_exists(switch_name):
+            raise HTTPException(status_code=404, detail=f"vSwitch '{switch_name}' не найден")
+
+        vlan_xml = ""
+        portgroup_name = (vm.vswitch_portgroup or "").strip()
+        if portgroup_name:
+            portgroups = _load_portgroups().get(switch_name, [])
+            match = next((pg for pg in portgroups if str(pg.get("name")) == portgroup_name), None)
+            if match is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Порт-группа '{portgroup_name}' не найдена в vSwitch '{switch_name}'",
+                )
+
+            vlan_type = str(match.get("vlan_type") or "").lower()
+            if vlan_type in {"access", "tagged"}:
+                vlan_id = int(match.get("vlan_id") or 0)
+                if vlan_id <= 0:
+                    raise HTTPException(status_code=400, detail=f"Некорректный VLAN ID в порт-группе '{portgroup_name}'")
+                vlan_xml = f"<vlan><tag id='{vlan_id}'/></vlan>"
+            elif vlan_type == "trunk":
+                trunk_raw = str(match.get("vlan_trunk") or "").strip()
+                if not trunk_raw:
+                    raise HTTPException(status_code=400, detail=f"В порт-группе '{portgroup_name}' не указан trunk VLAN")
+                vlan_ids = _parse_trunk_vlan_ids(trunk_raw)
+                tags = "".join(f"<tag id='{vlan_id}'/>" for vlan_id in vlan_ids)
+                vlan_xml = f"<vlan trunk='yes'>{tags}</vlan>"
+
+        return (
+            "<interface type='bridge'>"
+            f"<source bridge='{switch_name}'/>"
+            "<model type='virtio'/>"
+            "<virtualport type='openvswitch'/>"
+            f"{vlan_xml}"
+            "</interface>"
+        )
+
+    network_name = (vm.network_name or "default").strip() or "default"
+    return (
+        "<interface type='network'>"
+        f"<source network='{network_name}'/>"
+        "<model type='virtio'/>"
+        "</interface>"
+    )
 
 
 def _get_libvirt_conn() -> libvirt.virConnect:  # type: ignore[name-defined]
@@ -224,7 +342,8 @@ def _get_disk_size_gb(disk_path: str | None) -> int | None:
         return None
 
 
-def _build_vm_xml(vm: VMCreate, disk_path: str) -> str:
+def _build_vm_xml(vm: VMCreate, disk_path: str, disk_format: str) -> str:
+    interface_xml = _build_interface_xml(vm)
     return f"""
     <domain type='kvm'>
       <name>{vm.name}</name>
@@ -237,14 +356,12 @@ def _build_vm_xml(vm: VMCreate, disk_path: str) -> str:
       <devices>
         <emulator>/usr/bin/qemu-system-x86_64</emulator>
         <disk type='file' device='disk'>
-          <driver name='qemu' type='qcow2'/>
+                    <driver name='qemu' type='{disk_format}'/>
           <source file='{disk_path}'/>
           <target dev='vda' bus='virtio'/>
         </disk>
-        <interface type='network'>
-          <source network='default'/>
-        </interface>
-        <graphics type='vnc' port='-1'/>
+                {interface_xml}
+                <graphics type='vnc' autoport='yes' listen='0.0.0.0'/>
       </devices>
     </domain>
     """.strip()
@@ -269,6 +386,7 @@ def _create_default_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocati
         storage_pool=pool_name,
         storage_volume=volume_name,
         owns_disk=True,
+        disk_format="qcow2",
     )
 
 
@@ -307,6 +425,7 @@ def _create_pool_volume(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocatio
         storage_pool=pool_name,
         storage_volume=f"{vm.name}.qcow2",
         owns_disk=True,
+        disk_format="qcow2",
     )
 
 
@@ -347,13 +466,110 @@ def _use_existing_pool_volume(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskL
         storage_pool=pool_name,
         storage_volume=volume_name,
         owns_disk=False,
+        disk_format=_detect_disk_format(disk_path),
+    )
+
+
+def _create_disk_from_uploaded_image(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
+    image_name = (vm.boot_source_image or "").strip()
+    if not image_name:
+        raise HTTPException(status_code=400, detail="Не выбран исходный образ диска")
+
+    if (vm.storage_pool or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Запуск из загруженного образа поддерживается только для системного каталога /var/lib/libvirt/images",
+        )
+
+    source_path = os.path.join(get_project_images_dir(), image_name)
+    if not os.path.isfile(source_path):
+        raise HTTPException(status_code=404, detail=f"Образ '{image_name}' не найден в разделе Образы")
+
+    source_ext = os.path.splitext(image_name)[1].lower()
+    if source_ext not in IMAGE_BACKED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Для диска ВМ поддерживаются только qcow2/img/vmdk/vdi образы",
+        )
+
+    os.makedirs(DEFAULT_VM_IMAGES_DIR, exist_ok=True)
+    target_name = f"{vm.name}{source_ext}"
+    target_path = os.path.join(DEFAULT_VM_IMAGES_DIR, target_name)
+    if os.path.exists(target_path):
+        raise HTTPException(status_code=400, detail=f"Диск '{target_name}' уже существует")
+
+    try:
+        shutil.copy2(source_path, target_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось скопировать образ '{image_name}': {exc}")
+
+    pool, pool_name = _ensure_default_images_pool(conn)
+    try:
+        if pool.isActive() == 1:  # type: ignore[no-untyped-call]
+            pool.refresh(0)  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError:
+        pass
+
+    return VMDiskLocation(
+        disk_path=target_path,
+        storage_pool=pool_name,
+        storage_volume=target_name,
+        owns_disk=True,
+        disk_format=_detect_disk_format(target_path),
     )
 
 
 def _resolve_vm_disk(conn: libvirt.virConnect, vm: VMCreate) -> VMDiskLocation:  # type: ignore[name-defined]
+    if (vm.boot_source_image or "").strip():
+        return _create_disk_from_uploaded_image(conn, vm)
     if vm.disk_mode == "existing":
         return _use_existing_pool_volume(conn, vm)
     return _create_pool_volume(conn, vm)
+
+
+def _extract_vm_network_details(root: ET.Element) -> tuple[str | None, str | None, str | None, str | None]:
+    interface = root.find("./devices/interface")
+    if interface is None:
+        return None, None, None, None
+
+    interface_type = interface.get("type")
+    source_node = interface.find("./source")
+    if interface_type == "network":
+        return "libvirt", source_node.get("network") if source_node is not None else None, None, None
+
+    if interface_type == "bridge":
+        bridge_name = source_node.get("bridge") if source_node is not None else None
+        vlan_node = interface.find("./vlan")
+        if vlan_node is None:
+            return "vswitch", None, bridge_name, None
+
+        tag_nodes = vlan_node.findall("./tag")
+        if not tag_nodes:
+            return "vswitch", None, bridge_name, None
+
+        trunk = vlan_node.get("trunk") == "yes"
+        if trunk:
+            portgroup = "trunk:" + ",".join(tag.get("id") for tag in tag_nodes if tag.get("id"))
+            return "vswitch", None, bridge_name, portgroup
+
+        return "vswitch", None, bridge_name, tag_nodes[0].get("id")
+
+    return None, None, None, None
+
+
+def _extract_primary_disk(root: ET.Element) -> tuple[str | None, str | None]:
+    disk_node = root.find("./devices/disk[@device='disk']")
+    if disk_node is None:
+        return None, None
+
+    source_node = disk_node.find("./source")
+    if source_node is None:
+        return None, None
+
+    disk_path = source_node.get("file") or source_node.get("dev") or source_node.get("name")
+    driver = disk_node.find("./driver")
+    disk_format = driver.get("type") if driver is not None else None
+    return disk_path, disk_format
 
 
 def _delete_disk_artifact(conn: libvirt.virConnect, disk: VMDiskLocation) -> None:  # type: ignore[name-defined]
@@ -392,7 +608,7 @@ async def create_vm(vm: VMCreate) -> VMItem:
         pass
 
     disk = _resolve_vm_disk(conn, vm)
-    vm_xml = _build_vm_xml(vm, disk.disk_path)
+    vm_xml = _build_vm_xml(vm, disk.disk_path, disk.disk_format)
 
     disk_gb = vm.disk_gb if vm.disk_mode == "create" else _get_disk_size_gb(disk.disk_path)
 
@@ -412,6 +628,11 @@ async def create_vm(vm: VMCreate) -> VMItem:
             storage_pool=disk.storage_pool,
             storage_volume=disk.storage_volume,
             disk_path=disk.disk_path,
+            disk_format=disk.disk_format,
+            network_source_type=vm.network_source_type,
+            network_name=vm.network_name if vm.network_source_type == "libvirt" else None,
+            vswitch_name=vm.vswitch_name if vm.network_source_type == "vswitch" else None,
+            vswitch_portgroup=vm.vswitch_portgroup if vm.network_source_type == "vswitch" else None,
         )
     except HTTPException:
         raise
@@ -447,24 +668,27 @@ async def list_vms() -> List[VMItem]:
             cpu_cores = int(root.findtext('./vcpu') or 0) or None
             memory_kib = int(root.findtext('./memory') or 0) or None
             memory_mb = int(memory_kib / 1024) if memory_kib else None
-            disk_node = root.find("./devices/disk[@device='disk']/source")
-            disk_path = None
+            disk_path, disk_format = _extract_primary_disk(root)
+            network_source_type, network_name, vswitch_name, vswitch_portgroup = _extract_vm_network_details(root)
             storage_volume = None
             storage_pool = None
             disk_gb = None
-            if disk_node is not None:
-                disk_path = disk_node.get('file') or disk_node.get('dev') or disk_node.get('name')
-                if disk_path:
-                    storage_volume = os.path.basename(disk_path)
-                    storage_pool = _resolve_storage_pool_by_path(disk_path, pool_paths)
-                    disk_gb = _get_disk_size_gb(disk_path)
+            if disk_path:
+                storage_volume = os.path.basename(disk_path)
+                storage_pool = _resolve_storage_pool_by_path(disk_path, pool_paths)
+                disk_gb = _get_disk_size_gb(disk_path)
         except Exception:
             cpu_cores = None
             memory_mb = None
             disk_gb = None
             disk_path = None
+            disk_format = None
             storage_pool = None
             storage_volume = None
+            network_source_type = None
+            network_name = None
+            vswitch_name = None
+            vswitch_portgroup = None
 
         items.append(
             VMItem(
@@ -478,6 +702,11 @@ async def list_vms() -> List[VMItem]:
                 storage_pool=storage_pool,
                 storage_volume=storage_volume,
                 disk_path=disk_path,
+                disk_format=disk_format,
+                network_source_type=network_source_type,
+                network_name=network_name,
+                vswitch_name=vswitch_name,
+                vswitch_portgroup=vswitch_portgroup,
             )
         )
 
@@ -502,6 +731,56 @@ async def start_vm(vm_id: str) -> dict:
         raise HTTPException(status_code=500, detail=f"Ошибка запуска ВМ: {exc}")
 
     return {"status": "ok"}
+
+
+@router.delete("/vms/{vm_id}")
+async def delete_vm(vm_id: str, delete_disk: bool = False) -> dict:
+    conn = _get_libvirt_conn()
+    try:
+        dom = conn.lookupByName(vm_id)  # type: ignore[no-untyped-call]
+    except libvirt.libvirtError:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=404, detail=f"ВМ '{vm_id}' не найдена")
+
+    disk = None
+    try:
+        root = ET.fromstring(dom.XMLDesc())  # type: ignore[no-untyped-call]
+        disk_path, _ = _extract_primary_disk(root)
+        if disk_path:
+            disk = VMDiskLocation(
+                disk_path=disk_path,
+                storage_pool=_resolve_storage_pool_by_path(disk_path, _get_storage_pool_paths(conn)),
+                storage_volume=os.path.basename(disk_path),
+                owns_disk=delete_disk,
+                disk_format=_detect_disk_format(disk_path),
+            )
+    except Exception:
+        disk = None
+
+    try:
+        if dom.isActive() == 1:  # type: ignore[no-untyped-call]
+            dom.destroy()  # type: ignore[no-untyped-call]
+        dom.undefineFlags(  # type: ignore[no-untyped-call]
+            libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE
+            | libvirt.VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA
+            | libvirt.VIR_DOMAIN_UNDEFINE_NVRAM
+            | libvirt.VIR_DOMAIN_UNDEFINE_CHECKPOINTS_METADATA
+        )
+    except AttributeError:
+        try:
+            dom.undefine()  # type: ignore[no-untyped-call]
+        except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+            raise HTTPException(status_code=500, detail=f"Ошибка удаления ВМ: {exc}")
+    except libvirt.libvirtError as exc:  # type: ignore[attr-defined]
+        raise HTTPException(status_code=500, detail=f"Ошибка удаления ВМ: {exc}")
+
+    if delete_disk and disk is not None:
+        _delete_disk_artifact(conn, disk)
+
+    return {
+        "status": "ok",
+        "message": f"ВМ '{vm_id}' удалена",
+        "disk_deleted": bool(delete_disk),
+    }
 
 
 @router.post("/vms/{vm_id}/stop")

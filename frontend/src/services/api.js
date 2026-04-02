@@ -46,9 +46,11 @@ export const apiService = {
   createVM: (data) => api.post('/api/vms', data),
   updateVM: (id, data) => api.put(`/api/vms/${id}`, data),
   deleteVM: (id) => api.delete(`/api/vms/${id}`),
+  deleteVMWithOptions: (id, options = {}) => api.delete(`/api/vms/${id}`, { params: options }),
   startVM: (id) => api.post(`/api/vms/${id}/start`),
   stopVM: (id) => api.post(`/api/vms/${id}/stop`),
   restartVM: (id) => api.post(`/api/vms/${id}/restart`),
+  getVMConsole: (id) => api.get(`/api/vms/${id}/console`),
   getVMMetrics: (id, limit = 60) => api.get(`/api/vms/${id}/metrics?limit=${limit}`),
   
   // Images

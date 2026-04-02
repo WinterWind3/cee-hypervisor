@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Play, Square, RotateCcw, Plus, Settings, Monitor } from 'lucide-react';
+import { Play, Square, RotateCcw, Plus, Settings, Monitor, TerminalSquare, Trash2 } from 'lucide-react';
 import { apiService } from '../services/api';
 import ActionButton from '../components/ActionButton';
 import AppDialog from '../components/AppDialog';
@@ -70,6 +70,9 @@ const stringToNumericId = (str) => {
 
 const VirtualMachines = () => {
   const [vms, setVms] = useState([]);
+  const [images, setImages] = useState([]);
+  const [networks, setNetworks] = useState([]);
+  const [vSwitches, setVSwitches] = useState([]);
   const [storagePools, setStoragePools] = useState([]);
   const [storageVolumes, setStorageVolumes] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -91,13 +94,19 @@ const VirtualMachines = () => {
     try {
       setLoading(true);
       setError(null);
-      const [vmResponse, storageResponse] = await Promise.all([
+      const [vmResponse, storageResponse, imagesResponse, networksResponse, vSwitchesResponse] = await Promise.all([
         apiService.getVMs(),
         apiService.getStorage(),
+        apiService.getImages(),
+        apiService.getNetworks(),
+        apiService.getVSwitches(),
       ]);
       setVms(vmResponse.data || []);
       setStoragePools(Array.isArray(storageResponse.data?.pools) ? storageResponse.data.pools : []);
       setStorageVolumes(Array.isArray(storageResponse.data?.volumes) ? storageResponse.data.volumes : []);
+      setImages(Array.isArray(imagesResponse.data) ? imagesResponse.data : []);
+      setNetworks(Array.isArray(networksResponse.data) ? networksResponse.data : []);
+      setVSwitches(Array.isArray(vSwitchesResponse.data) ? vSwitchesResponse.data : []);
       if (showMessage) {
         showUpdateMessage('Данные обновлены');
       }
@@ -107,6 +116,9 @@ const VirtualMachines = () => {
           err.message ||
           'Ошибка загрузки списка виртуальных машин'
       );
+      setImages([]);
+      setNetworks([]);
+      setVSwitches([]);
       setStoragePools([]);
       setStorageVolumes([]);
     } finally {
@@ -198,7 +210,21 @@ const VirtualMachines = () => {
   }, [selectedVmName, vms]);
 
   const [showCreate, setShowCreate] = useState(isCreateAction);
-  const [newVm, setNewVm] = useState({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10, disk_mode: 'create', storage_pool: '', existing_volume: '' });
+  const [newVm, setNewVm] = useState({
+    name: '',
+    cpu_cores: 1,
+    memory_mb: 1024,
+    disk_gb: 10,
+    disk_source_mode: 'create',
+    disk_mode: 'create',
+    storage_pool: '',
+    existing_volume: '',
+    boot_source_image: '',
+    network_source_type: 'libvirt',
+    network_name: 'default',
+    vswitch_name: '',
+    vswitch_portgroup: '',
+  });
 
   const usedStorageVolumeKeys = useMemo(
     () => new Set(
@@ -218,6 +244,16 @@ const VirtualMachines = () => {
     );
   }, [newVm.storage_pool, storageVolumes, usedStorageVolumeKeys]);
 
+  const availableBootImages = useMemo(
+    () => images.filter((image) => ['qcow2', 'img', 'vmdk', 'vdi'].includes((image.type || '').toLowerCase())),
+    [images]
+  );
+
+  const selectedVSwitchPortgroups = useMemo(() => {
+    const selected = vSwitches.find((sw) => sw.name === newVm.vswitch_name);
+    return Array.isArray(selected?.portgroups) ? selected.portgroups : [];
+  }, [newVm.vswitch_name, vSwitches]);
+
   const buildVmPresetForm = useCallback((presetId, currentForm = newVm) => {
     const preset = VM_PRESET_CONFIG[presetId] || VM_PRESET_CONFIG.mini;
     return {
@@ -226,9 +262,15 @@ const VirtualMachines = () => {
       cpu_cores: preset.cpu_cores,
       memory_mb: preset.memory_mb,
       disk_gb: preset.disk_gb,
+      disk_source_mode: 'create',
       disk_mode: 'create',
       storage_pool: currentForm.storage_pool || activeStoragePools[0]?.name || '',
       existing_volume: '',
+      boot_source_image: '',
+      network_source_type: currentForm.network_source_type || 'libvirt',
+      network_name: currentForm.network_name || 'default',
+      vswitch_name: currentForm.vswitch_name || '',
+      vswitch_portgroup: '',
     };
   }, [activeStoragePools, newVm, vms]);
 
@@ -241,9 +283,15 @@ const VirtualMachines = () => {
       cpu_cores: 1,
       memory_mb: 1024,
       disk_gb: 10,
+      disk_source_mode: 'create',
       disk_mode: 'create',
       storage_pool: activeStoragePools[0]?.name || '',
       existing_volume: '',
+      boot_source_image: '',
+      network_source_type: 'libvirt',
+      network_name: 'default',
+      vswitch_name: '',
+      vswitch_portgroup: '',
     }));
     setShowCreate(true);
   };
@@ -251,11 +299,56 @@ const VirtualMachines = () => {
   const handleCreateChange = (field) => (e) => {
     const value = e.target.value;
     setSelectedVmPreset('');
-    setNewVm((s) => ({
-      ...s,
-      existing_volume: field === 'disk_mode' || field === 'storage_pool' ? '' : s.existing_volume,
-      [field]: field === 'name' || field === 'storage_pool' || field === 'disk_mode' || field === 'existing_volume' ? value : Number(value),
-    }));
+    setNewVm((s) => {
+      if (field === 'disk_source_mode') {
+        const nextDiskMode = value === 'existing' ? 'existing' : 'create';
+        return {
+          ...s,
+          disk_source_mode: value,
+          disk_mode: nextDiskMode,
+          existing_volume: '',
+          boot_source_image: '',
+          storage_pool: value === 'image' ? '' : s.storage_pool,
+        };
+      }
+
+      if (field === 'storage_pool') {
+        return {
+          ...s,
+          storage_pool: value,
+          existing_volume: '',
+        };
+      }
+
+      if (field === 'network_source_type') {
+        return {
+          ...s,
+          network_source_type: value,
+          network_name: value === 'libvirt' ? (s.network_name || 'default') : '',
+          vswitch_name: value === 'vswitch' ? s.vswitch_name : '',
+          vswitch_portgroup: '',
+        };
+      }
+
+      if (field === 'vswitch_name') {
+        return {
+          ...s,
+          vswitch_name: value,
+          vswitch_portgroup: '',
+        };
+      }
+
+      return {
+        ...s,
+        [field]: ['name', 'existing_volume', 'boot_source_image', 'network_name', 'vswitch_portgroup'].includes(field)
+          ? value
+          : Number.isFinite(Number(value)) && !['cpu_cores', 'memory_mb', 'disk_gb'].includes(field)
+            ? value
+            : ['cpu_cores', 'memory_mb', 'disk_gb'].includes(field)
+              ? Number(value)
+              : value,
+      };
+    });
   };
 
   const applyVmPreset = (presetId) => {
@@ -268,12 +361,25 @@ const VirtualMachines = () => {
     name: !newVm.name.trim() ? 'Введите имя виртуальной машины.' : '',
     cpu_cores: Number(newVm.cpu_cores) < 1 ? 'Укажите хотя бы 1 ядро CPU.' : '',
     memory_mb: Number(newVm.memory_mb) < 128 ? 'Укажите не меньше 128 MB ОЗУ.' : '',
-    disk_gb: newVm.disk_mode === 'create' && Number(newVm.disk_gb) < 1 ? 'Укажите размер диска не меньше 1 GB.' : '',
-    storage_pool: newVm.disk_mode === 'existing' && !newVm.storage_pool ? 'Выберите пул хранения для существующего тома.' : '',
-    existing_volume: newVm.disk_mode === 'existing' && !newVm.existing_volume ? 'Выберите существующий том.' : '',
+    disk_gb: newVm.disk_source_mode === 'create' && Number(newVm.disk_gb) < 1 ? 'Укажите размер диска не меньше 1 GB.' : '',
+    storage_pool: newVm.disk_source_mode === 'existing' && !newVm.storage_pool ? 'Выберите пул хранения для существующего тома.' : '',
+    existing_volume: newVm.disk_source_mode === 'existing' && !newVm.existing_volume ? 'Выберите существующий том.' : '',
+    boot_source_image: newVm.disk_source_mode === 'image' && !newVm.boot_source_image ? 'Выберите загруженный образ диска.' : '',
+    network_name: newVm.network_source_type === 'libvirt' && !newVm.network_name ? 'Выберите libvirt-сеть.' : '',
+    vswitch_name: newVm.network_source_type === 'vswitch' && !newVm.vswitch_name ? 'Выберите vSwitch.' : '',
   };
 
-  const hasCreateErrors = Boolean(createErrors.name || createErrors.cpu_cores || createErrors.memory_mb || createErrors.disk_gb || createErrors.storage_pool || createErrors.existing_volume);
+  const hasCreateErrors = Boolean(
+    createErrors.name
+    || createErrors.cpu_cores
+    || createErrors.memory_mb
+    || createErrors.disk_gb
+    || createErrors.storage_pool
+    || createErrors.existing_volume
+    || createErrors.boot_source_image
+    || createErrors.network_name
+    || createErrors.vswitch_name
+  );
 
   const isFieldInvalid = (field) => Boolean((createAttempted || touchedFields[field]) && createErrors[field]);
 
@@ -310,11 +416,36 @@ const VirtualMachines = () => {
     }
     try {
       setIsCreating(true);
-      await apiService.createVM(newVm);
+      const payload = {
+        ...newVm,
+        disk_mode: newVm.disk_source_mode === 'existing' ? 'existing' : 'create',
+        boot_source_image: newVm.disk_source_mode === 'image' ? newVm.boot_source_image : null,
+        storage_pool: newVm.disk_source_mode === 'image' ? null : (newVm.storage_pool || null),
+        existing_volume: newVm.disk_source_mode === 'existing' ? newVm.existing_volume : null,
+        network_name: newVm.network_source_type === 'libvirt' ? (newVm.network_name || 'default') : null,
+        vswitch_name: newVm.network_source_type === 'vswitch' ? newVm.vswitch_name : null,
+        vswitch_portgroup: newVm.network_source_type === 'vswitch' ? (newVm.vswitch_portgroup || null) : null,
+      };
+
+      await apiService.createVM(payload);
       resetCreateValidation();
       setSelectedVmPreset('mini');
       setShowCreate(false);
-      setNewVm({ name: '', cpu_cores: 1, memory_mb: 1024, disk_gb: 10, disk_mode: 'create', storage_pool: activeStoragePools[0]?.name || '', existing_volume: '' });
+      setNewVm({
+        name: '',
+        cpu_cores: 1,
+        memory_mb: 1024,
+        disk_gb: 10,
+        disk_source_mode: 'create',
+        disk_mode: 'create',
+        storage_pool: activeStoragePools[0]?.name || '',
+        existing_volume: '',
+        boot_source_image: '',
+        network_source_type: 'libvirt',
+        network_name: 'default',
+        vswitch_name: '',
+        vswitch_portgroup: '',
+      });
       await loadVMs(false);
       openDialog({
         title: `ВМ ${newVm.name} создана`,
@@ -343,8 +474,54 @@ const VirtualMachines = () => {
         `Хранилище: ${vm.storage_pool || 'Системный путь'}\n` +
         `Том: ${vm.storage_volume || '-'}\n` +
         `Путь: ${vm.disk_path || '-'}\n` +
+        `Формат диска: ${vm.disk_format || '-'}\n` +
+        `Источник сети: ${vm.network_source_type || '-'}\n` +
+        `Сеть: ${vm.network_name || '-'}\n` +
+        `vSwitch: ${vm.vswitch_name || '-'}\n` +
+        `PortGroup: ${vm.vswitch_portgroup || '-'}\n` +
         `Кластер: ${vm.cluster_id ?? vm.cluster ?? '-'}`,
       variant: 'info',
+    });
+  };
+
+  const handleConsole = async (vm) => {
+    try {
+      const response = await apiService.getVMConsole(vm.name);
+      const url = response?.data?.url;
+      if (!url) {
+        throw new Error('URL консоли не получен');
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      openDialog({
+        title: 'Не удалось открыть консоль',
+        message: err.response?.data?.detail || err.message || 'Неизвестная ошибка',
+        variant: 'danger',
+      });
+    }
+  };
+
+  const handleDelete = (vm) => {
+    openDialog({
+      title: `Удалить ВМ ${vm.name}?`,
+      message: 'Виртуальная машина будет удалена из libvirt. Диск можно удалить отдельно в разделе Хранилище.',
+      variant: 'danger',
+      confirmLabel: 'Удалить',
+      cancelLabel: 'Отмена',
+      onConfirm: async () => {
+        try {
+          await apiService.deleteVMWithOptions(vm.name, { delete_disk: false });
+          closeDialog();
+          await loadVMs(false);
+          showUpdateMessage(`ВМ ${vm.name} удалена`);
+        } catch (err) {
+          openDialog({
+            title: 'Не удалось удалить ВМ',
+            message: err.response?.data?.detail || err.message || 'Неизвестная ошибка',
+            variant: 'danger',
+          });
+        }
+      },
     });
   };
 
@@ -420,17 +597,32 @@ const VirtualMachines = () => {
           {isFieldInvalid('memory_mb') && <p className="modal-error">{createErrors.memory_mb}</p>}
         </div>
         <div className="modal-field">
-          <label className="modal-label">Режим диска</label>
-          <select className="input w-full" value={newVm.disk_mode} onChange={handleCreateChange('disk_mode')}>
-            <option value="create">Создать новый том</option>
+          <label className="modal-label">Источник системного диска</label>
+          <select className="input w-full" value={newVm.disk_source_mode} onChange={handleCreateChange('disk_source_mode')}>
+            <option value="create">Создать новый диск</option>
             <option value="existing">Использовать существующий том</option>
+            <option value="image">Копировать из загруженного образа</option>
           </select>
         </div>
         <div className="modal-field">
           <label className="modal-label">Размер диска, GB</label>
-          <input type="number" min="1" className={getFieldClassName('disk_gb')} value={newVm.disk_gb} onChange={handleCreateChange('disk_gb')} onBlur={markFieldTouched('disk_gb')} disabled={newVm.disk_mode !== 'create'} placeholder="Например: 20" />
+          <input type="number" min="1" className={getFieldClassName('disk_gb')} value={newVm.disk_gb} onChange={handleCreateChange('disk_gb')} onBlur={markFieldTouched('disk_gb')} disabled={newVm.disk_source_mode !== 'create'} placeholder="Например: 20" />
           {isFieldInvalid('disk_gb') && <p className="modal-error">{createErrors.disk_gb}</p>}
         </div>
+        {newVm.disk_source_mode === 'image' && (
+          <div className="modal-field">
+            <label className="modal-label">Загруженный образ диска</label>
+            <select className={getFieldClassName('boot_source_image')} value={newVm.boot_source_image} onChange={handleCreateChange('boot_source_image')} onBlur={markFieldTouched('boot_source_image')}>
+              <option value="">Выберите образ</option>
+              {availableBootImages.map((image) => (
+                <option key={image.name} value={image.name}>{image.name}</option>
+              ))}
+            </select>
+            {isFieldInvalid('boot_source_image') && <p className="modal-error">{createErrors.boot_source_image}</p>}
+            <p className="modal-hint">Будет создана отдельная копия образа в /var/lib/libvirt/images под именем ВМ.</p>
+          </div>
+        )}
+        {newVm.disk_source_mode !== 'image' && (
         <div className="modal-field">
           <label className="modal-label">Пул хранения</label>
           <select className={getFieldClassName('storage_pool')} value={newVm.storage_pool} onChange={handleCreateChange('storage_pool')} onBlur={markFieldTouched('storage_pool')}>
@@ -442,7 +634,8 @@ const VirtualMachines = () => {
           {isFieldInvalid('storage_pool') && <p className="modal-error">{createErrors.storage_pool}</p>}
           <p className="modal-hint">Если выбран пул хранения, диск ВМ будет создан как том qcow2 внутри этого пула.</p>
         </div>
-        {newVm.disk_mode === 'existing' && (
+        )}
+        {newVm.disk_source_mode === 'existing' && (
           <div className="modal-field">
             <label className="modal-label">Существующий том</label>
             <select className={getFieldClassName('existing_volume')} value={newVm.existing_volume} onChange={handleCreateChange('existing_volume')} onBlur={markFieldTouched('existing_volume')}>
@@ -454,6 +647,48 @@ const VirtualMachines = () => {
             {isFieldInvalid('existing_volume') && <p className="modal-error">{createErrors.existing_volume}</p>}
             {newVm.storage_pool && availableExistingVolumes.length === 0 && <p className="modal-hint text-amber-300">В выбранном пуле пока нет доступных томов.</p>}
           </div>
+        )}
+        <div className="modal-field">
+          <label className="modal-label">Сетевое подключение</label>
+          <select className="input w-full" value={newVm.network_source_type} onChange={handleCreateChange('network_source_type')}>
+            <option value="libvirt">Libvirt network</option>
+            <option value="vswitch">vSwitch / Port Group</option>
+          </select>
+        </div>
+        {newVm.network_source_type === 'libvirt' && (
+          <div className="modal-field">
+            <label className="modal-label">Libvirt сеть</label>
+            <select className={getFieldClassName('network_name')} value={newVm.network_name} onChange={handleCreateChange('network_name')} onBlur={markFieldTouched('network_name')}>
+              <option value="">Выберите сеть</option>
+              {networks.map((network) => (
+                <option key={network.id} value={network.name}>{network.name}</option>
+              ))}
+            </select>
+            {isFieldInvalid('network_name') && <p className="modal-error">{createErrors.network_name}</p>}
+          </div>
+        )}
+        {newVm.network_source_type === 'vswitch' && (
+          <>
+            <div className="modal-field">
+              <label className="modal-label">vSwitch</label>
+              <select className={getFieldClassName('vswitch_name')} value={newVm.vswitch_name} onChange={handleCreateChange('vswitch_name')} onBlur={markFieldTouched('vswitch_name')}>
+                <option value="">Выберите vSwitch</option>
+                {vSwitches.map((sw) => (
+                  <option key={sw.name} value={sw.name}>{sw.name}</option>
+                ))}
+              </select>
+              {isFieldInvalid('vswitch_name') && <p className="modal-error">{createErrors.vswitch_name}</p>}
+            </div>
+            <div className="modal-field">
+              <label className="modal-label">Port Group (опционально)</label>
+              <select className="input w-full" value={newVm.vswitch_portgroup} onChange={handleCreateChange('vswitch_portgroup')}>
+                <option value="">Без Port Group</option>
+                {selectedVSwitchPortgroups.map((pg) => (
+                  <option key={pg.name} value={pg.name}>{pg.name}</option>
+                ))}
+              </select>
+            </div>
+          </>
         )}
       </FormModal>
 
@@ -585,6 +820,22 @@ const VirtualMachines = () => {
                         disabled={isRowPending}
                       >
                         <RotateCcw className={`table-action-icon ${isRowPending && pendingAction === 'restart' ? 'animate-spin' : ''}`} />
+                      </button>
+                      <button
+                        className={`table-action-icon-button ${isRowPending ? 'text-dark-500 cursor-not-allowed' : 'text-dark-400 hover:text-white'}`}
+                        title={`Открыть консоль ВМ ${vm.name}`}
+                        onClick={() => handleConsole(vm)}
+                        disabled={isRowPending}
+                      >
+                        <TerminalSquare className="table-action-icon" />
+                      </button>
+                      <button
+                        className={`table-action-icon-button ${isRowPending ? 'text-dark-500 cursor-not-allowed' : 'text-dark-400 hover:text-red-400'}`}
+                        title={`Удалить ВМ ${vm.name}`}
+                        onClick={() => handleDelete(vm)}
+                        disabled={isRowPending}
+                      >
+                        <Trash2 className="table-action-icon" />
                       </button>
                       <button
                         className={`table-action-icon-button ${isRowPending ? 'text-dark-500 cursor-not-allowed' : 'text-dark-400 hover:text-white'}`}
