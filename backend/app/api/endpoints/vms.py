@@ -345,16 +345,16 @@ def _get_disk_size_gb(disk_path: str | None) -> int | None:
 
 def _build_vm_xml(vm: VMCreate, disk_path: str, disk_format: str, cdrom_iso_path: str | None = None) -> str:
     interface_xml = _build_interface_xml(vm)
-        cdrom_xml = ""
-        if cdrom_iso_path:
-                cdrom_xml = f"""
-                <disk type='file' device='cdrom'>
-                    <driver name='qemu' type='raw'/>
-                    <source file='{cdrom_iso_path}'/>
-                    <target dev='sda' bus='sata'/>
-                    <readonly/>
-                </disk>
-                """.strip()
+    cdrom_xml = ""
+    if cdrom_iso_path:
+        cdrom_xml = f"""
+        <disk type='file' device='cdrom'>
+          <driver name='qemu' type='raw'/>
+          <source file='{cdrom_iso_path}'/>
+          <target dev='sda' bus='sata'/>
+          <readonly/>
+        </disk>
+        """.strip()
 
     return f"""
     <domain type='kvm'>
