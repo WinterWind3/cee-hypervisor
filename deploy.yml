@@ -161,11 +161,26 @@
       ignore_errors: true
       changed_when: false
 
-    - name: Build and start CEE Hypervisor
-      community.docker.docker_compose_v2:
-        project_src: "{{ app_dir }}"
-        build: always
-        state: present
+    - name: Build CEE Hypervisor image without cache
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - build
+          - --no-cache
+        chdir: "{{ app_dir }}"
+      become_user: "{{ app_user }}"
+
+    - name: Start CEE Hypervisor with forced recreation
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - up
+          - -d
+          - --force-recreate
+          - --remove-orphans
+        chdir: "{{ app_dir }}"
       become_user: "{{ app_user }}"
 
     # ── Health check ──────────────────────────────────────────────────────────
