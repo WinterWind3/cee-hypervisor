@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 
 import libvirt
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -96,7 +96,7 @@ app.include_router(vswitches.router, prefix="/api", tags=["vswitches"])
 
 
 @app.get("/api/vms/{name}/console")
-async def vm_console(name: str):
+async def vm_console(name: str, request: Request):
     """Получить URL консоли ВМ для noVNC.
 
     Ожидается, что для ВМ настроен graphics type='vnc' в libvirt.
@@ -139,9 +139,12 @@ async def vm_console(name: str):
     if vnc_port in {None, -1}:
         raise HTTPException(status_code=500, detail="Не удалось определить VNC-порт для запущенной ВМ")
 
-    novnc_host = os.getenv("NOVNC_HOST", "localhost")
+    request_host = request.headers.get("x-forwarded-host") or request.url.hostname or "localhost"
+    request_host = request_host.split(":", 1)[0]
+
+    novnc_host = os.getenv("NOVNC_HOST", request_host)
     novnc_port = int(os.getenv("NOVNC_PORT", "6080"))
-    vnc_target_host = os.getenv("LIBVIRT_VNC_HOST", "localhost")
+    vnc_target_host = os.getenv("LIBVIRT_VNC_HOST", request_host)
 
     # Базовый URL для noVNC: noVNC доступен по http://NOVNC_HOST:NOVNC_PORT,
     # а в параметрах host/port указываем реальный VNC-сервер (libvirt-хост).
