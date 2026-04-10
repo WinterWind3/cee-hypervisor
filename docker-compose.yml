@@ -14,7 +14,7 @@ services:
       - LIBVIRT_URI=qemu:///system
       - DATABASE_URL=sqlite:////app/data/cee.db
       - PORTGROUPS_FILE=/app/data/portgroups.json
-      - NOVNC_HOST=${NOVNC_HOST:-localhost}
+      - NOVNC_HOST=${NOVNC_HOST:-}
       - NOVNC_PORT=${NOVNC_PORT:-6080}
       - LIBVIRT_VNC_HOST=${LIBVIRT_VNC_HOST:-127.0.0.1}
       - NOVNC_TOKEN_FILE=/app/data/novnc/tokens

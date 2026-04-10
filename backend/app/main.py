@@ -177,7 +177,7 @@ async def vm_console(name: str, request: Request):
     request_host = request.headers.get("x-forwarded-host") or request.url.hostname or "localhost"
     request_host = request_host.split(":", 1)[0]
 
-    novnc_host = os.getenv("NOVNC_HOST", request_host)
+    novnc_host = os.getenv("NOVNC_HOST") or request_host
     novnc_port = int(os.getenv("NOVNC_PORT", "6080"))
     vnc_target_host = os.getenv("LIBVIRT_VNC_HOST", "127.0.0.1")
     novnc_token_file = os.getenv("NOVNC_TOKEN_FILE", "/app/data/novnc/tokens")
@@ -192,8 +192,6 @@ async def vm_console(name: str, request: Request):
     query = urlencode({
         "autoconnect": "1",
         "resize": "remote",
-        "host": novnc_host,
-        "port": str(novnc_port),
         "path": f"websockify?token={token}",
     })
     console_url = f"http://{novnc_host}:{novnc_port}/vnc.html?{query}"
