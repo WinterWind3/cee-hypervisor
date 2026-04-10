@@ -14,6 +14,10 @@ services:
       - LIBVIRT_URI=qemu:///system
       - DATABASE_URL=sqlite:////app/data/cee.db
       - PORTGROUPS_FILE=/app/data/portgroups.json
+      - NOVNC_HOST=${NOVNC_HOST:-localhost}
+      - NOVNC_PORT=${NOVNC_PORT:-6080}
+      - LIBVIRT_VNC_HOST=${LIBVIRT_VNC_HOST:-127.0.0.1}
+      - NOVNC_TOKEN_FILE=/app/data/novnc/tokens
     volumes:
       # Mount host libvirt socket so the container can manage VMs on the host
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
@@ -28,6 +32,21 @@ services:
     group_add:
       # Numeric GID of the libvirt group on the host — resolved by Ansible and written to .env
       - "${LIBVIRT_GID}"
+
+  cee-novnc:
+    build: .
+    container_name: cee-novnc
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - /bin/sh
+      - -lc
+      - mkdir -p /app/data/novnc && touch /app/data/novnc/tokens && exec websockify --web /usr/share/novnc/ --token-plugin TokenFile --token-source /app/data/novnc/tokens 6080
+    environment:
+      - NOVNC_PORT=${NOVNC_PORT:-6080}
+      - NOVNC_TOKEN_FILE=/app/data/novnc/tokens
+    volumes:
+      - cee_data:/app/data
 
 volumes:
   cee_data:

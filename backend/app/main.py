@@ -2,9 +2,12 @@
 
 import logging
 import os
+import re
+import tempfile
 import time
 from contextlib import asynccontextmanager
 import xml.etree.ElementTree as ET
+from urllib.parse import urlencode
 
 import libvirt
 import uvicorn
@@ -24,6 +27,38 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _build_novnc_token(vm_name: str) -> str:
+    sanitized_name = re.sub(r"[^A-Za-z0-9._-]", "-", vm_name).strip("-._")
+    if not sanitized_name:
+        sanitized_name = "vm"
+    return f"vm-{sanitized_name}"
+
+
+def _write_novnc_token(token_file: str, token: str, target_host: str, target_port: int) -> None:
+    token_dir = os.path.dirname(token_file)
+    if token_dir:
+        os.makedirs(token_dir, exist_ok=True)
+
+    token_entry = f"{token}: {target_host}:{target_port}"
+    updated_lines: list[str] = []
+
+    if os.path.exists(token_file):
+        with open(token_file, "r", encoding="utf-8") as token_stream:
+            for raw_line in token_stream:
+                line = raw_line.strip()
+                if not line or line.startswith(f"{token}:"):
+                    continue
+                updated_lines.append(line)
+
+    updated_lines.append(token_entry)
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=token_dir or None, delete=False) as temp_file:
+        temp_file.write("\n".join(updated_lines) + "\n")
+        temp_path = temp_file.name
+
+    os.replace(temp_path, token_file)
 
 
 def _get_frontend_build_dir() -> str:
@@ -144,14 +179,24 @@ async def vm_console(name: str, request: Request):
 
     novnc_host = os.getenv("NOVNC_HOST", request_host)
     novnc_port = int(os.getenv("NOVNC_PORT", "6080"))
-    vnc_target_host = os.getenv("LIBVIRT_VNC_HOST", request_host)
+    vnc_target_host = os.getenv("LIBVIRT_VNC_HOST", "127.0.0.1")
+    novnc_token_file = os.getenv("NOVNC_TOKEN_FILE", "/app/data/novnc/tokens")
 
-    # Базовый URL для noVNC: noVNC доступен по http://NOVNC_HOST:NOVNC_PORT,
-    # а в параметрах host/port указываем реальный VNC-сервер (libvirt-хост).
-    console_url = (
-        f"http://{novnc_host}:{novnc_port}/vnc.html"
-        f"?host={vnc_target_host}&port={vnc_port}"
-    )
+    token = _build_novnc_token(name)
+    try:
+        _write_novnc_token(novnc_token_file, token, vnc_target_host, vnc_port)
+    except OSError as exc:
+        logger.error("Failed to update noVNC token file %s: %s", novnc_token_file, exc)
+        raise HTTPException(status_code=500, detail="Не удалось подготовить токен noVNC")
+
+    query = urlencode({
+        "autoconnect": "1",
+        "resize": "remote",
+        "host": novnc_host,
+        "port": str(novnc_port),
+        "path": f"websockify?token={token}",
+    })
+    console_url = f"http://{novnc_host}:{novnc_port}/vnc.html?{query}"
     return {"url": console_url}
 
 @app.get("/")

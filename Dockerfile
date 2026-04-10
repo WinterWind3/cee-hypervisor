@@ -28,6 +28,8 @@ RUN apt-get update \
         python3-dev \
         iproute2 \
         qemu-utils \
+        novnc \
+        websockify \
     && printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
     && chmod +x /usr/sbin/policy-rc.d \
     && apt-get install -y --no-install-recommends openvswitch-switch \

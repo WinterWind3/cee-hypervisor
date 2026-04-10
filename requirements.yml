@@ -6,3 +6,41 @@
 collections:
   - name: community.docker
     version: ">=3.0.0"
+  - name: community.general
+    version: ">=8.0.0"
+*** Add File: c:\Users\Winter\Documents\Работа\cee-hypervisor\deploy-github.sh
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$repo_root"
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required" >&2
+  exit 1
+fi
+
+if ! command -v ansible-playbook >/dev/null 2>&1; then
+  echo "ansible-playbook is required" >&2
+  exit 1
+fi
+
+branch="${DEPLOY_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+if [[ "$branch" == "HEAD" ]]; then
+  echo "Detached HEAD is not supported for deploy-github.sh" >&2
+  exit 1
+fi
+
+remote_url="${DEPLOY_REMOTE_URL:-$(git remote get-url origin)}"
+commit_message="${1:-deploy: $(date -u +'%Y-%m-%dT%H:%M:%SZ')}"
+
+git add -A
+if ! git diff --cached --quiet; then
+  git commit -m "$commit_message"
+fi
+
+git push origin "$branch"
+
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook -i hosts.yml deploy.yml -e "app_repo=$remote_url" -e "app_version=$branch"
