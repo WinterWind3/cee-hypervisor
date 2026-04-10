@@ -52,6 +52,8 @@ export const apiService = {
   restartVM: (id) => api.post(`/api/vms/${id}/restart`),
   getVMConsole: (id) => api.get(`/api/vms/${id}/console`),
   getVMMetrics: (id, limit = 60) => api.get(`/api/vms/${id}/metrics?limit=${limit}`),
+  attachVMCdrom: (id, imageName) => api.post(`/api/vms/${id}/cdrom`, { image_name: imageName }),
+  detachVMCdrom: (id) => api.delete(`/api/vms/${id}/cdrom`),
   
   // Images
   getImages: () => api.get('/api/images/', { params: { _: Date.now() } }),
